@@ -177,6 +177,8 @@ fn debug_screenshot(
         commands.spawn((
             Camera3d::default(),
             Hdr,
+            bevy::pbr::AtmosphereSettings::default(),
+            bevy::light::AtmosphereEnvironmentMapLight::default(),
             Camera {
                 order: 5,
                 ..default()

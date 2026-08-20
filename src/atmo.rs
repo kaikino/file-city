@@ -72,10 +72,10 @@ fn setup_sky(
 ) {
     ambient.color = Color::srgb(0.6, 0.62, 0.9);
     ambient.brightness = 80.0;
-    commands.spawn((
-        Atmosphere::earth(mediums.add(ScatteringMedium::default())),
-        Transform::default(),
-    ));
+    // The entity's transform is the planet center: put the surface at y=0.
+    let atmosphere = Atmosphere::earth(mediums.add(ScatteringMedium::default()));
+    let planet_center = Vec3::NEG_Y * atmosphere.inner_radius;
+    commands.spawn((atmosphere, Transform::from_translation(planet_center)));
     commands.spawn((
         Sun,
         DirectionalLight {
@@ -230,9 +230,11 @@ fn day_night_cycle(
         light.color = Color::srgb(c.x, c.y, c.z);
     }
 
+    // Sky IBL (AtmosphereEnvironmentMapLight) provides most ambient light;
+    // this is just a floor so alleys never go pitch black.
     let amb = Vec3::new(0.75, 0.85, 1.0).lerp(Vec3::new(0.50, 0.42, 0.85), nf);
     ambient.color = Color::srgb(amb.x, amb.y, amb.z);
-    ambient.brightness = 260.0 - 210.0 * nf;
+    ambient.brightness = 120.0 - 70.0 * nf;
 
     let fog_end_day = meta
         .map(|m| (m.half_extent * 2.4).clamp(150.0, 420.0))

@@ -87,6 +87,10 @@ fn spawn_player(mut commands: Commands, meta: Res<CityMeta>) {
             parent.spawn((
                 Camera3d::default(),
                 Hdr,
+                // Required for the procedural sky to render on this camera.
+                bevy::pbr::AtmosphereSettings::default(),
+                // Sky-driven ambient light and reflections.
+                bevy::light::AtmosphereEnvironmentMapLight::default(),
                 Projection::Perspective(PerspectiveProjection {
                     fov: BASE_FOV_DEG.to_radians(),
                     ..default()
