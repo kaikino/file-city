@@ -821,13 +821,15 @@ fn spawn_district(
         }
     }
 
-    // Street props (vending machines, crates, balls) along the south edge.
+    // Street props (vending machines, crates, balls) on the road in front of
+    // the south facade row, clear of the buildings.
+    let road_y = if depth <= 1 { 0.0 } else { SLAB_TOP };
     let mut px = rect.min.x + 3.0;
     for f in props {
         if px > rect.max().x - 3.0 {
             break;
         }
-        spawn_prop(ctx, f, Vec2::new(px, rect.max().y - 1.3), SLAB_TOP);
+        spawn_prop(ctx, f, Vec2::new(px, rect.max().y + 1.7), road_y);
         px += 2.2 + (seed_for(&f.path) % 30) as f32 * 0.1;
     }
 }
