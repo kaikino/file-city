@@ -2,7 +2,8 @@
 //! gravity-gun grab/carry/throw (F / click), and physics projectiles (click
 //! with empty hands). Every file opens inside the game: text/code readers,
 //! image viewers, audio playback, archive listings and hex dumps for
-//! binaries. Nothing shells out to external apps.
+//! binaries. Files are never launched; the only outward action is R, which
+//! reveals the file's location in Finder without opening the file itself.
 
 use std::path::PathBuf;
 
@@ -72,6 +73,7 @@ pub enum InspectorContent {
         title: String,
         body: String,
         meta: String,
+        path: PathBuf,
     },
     Image {
         title: String,
@@ -81,7 +83,19 @@ pub enum InspectorContent {
     Info {
         title: String,
         lines: Vec<String>,
+        path: PathBuf,
     },
+}
+
+impl InspectorContent {
+    /// The real file this overlay is about (used by reveal-in-Finder).
+    pub fn path(&self) -> &PathBuf {
+        match self {
+            InspectorContent::Text { path, .. }
+            | InspectorContent::Image { path, .. }
+            | InspectorContent::Info { path, .. } => path,
+        }
+    }
 }
 
 /// Request to toggle playback of an audio file (handled by filereps).
@@ -235,6 +249,7 @@ fn interact_keys(
                         title: f.name.clone(),
                         body,
                         meta: format!("{meta} · {}", f.path.display()),
+                        path: f.path.clone(),
                     });
                     grab.0 = false;
                 }
@@ -257,6 +272,7 @@ fn interact_keys(
                         title: format!("{} — contents", f.name),
                         body: archive_listing(&f.path),
                         meta: format!("{meta} · {}", f.path.display()),
+                        path: f.path.clone(),
                     });
                     grab.0 = false;
                 }
@@ -269,7 +285,9 @@ fn interact_keys(
                             format!("Path:  {}", f.path.display()),
                             String::new(),
                             "Video decoding is not supported in-game.".into(),
+                            "Press R to reveal it in Finder.".into(),
                         ],
+                        path: f.path.clone(),
                     });
                     grab.0 = false;
                 }
@@ -278,6 +296,7 @@ fn interact_keys(
                         title: format!("{} — hex", f.name),
                         body: hex_dump(&f.path, 4096, f.size),
                         meta: format!("{meta} · {}", f.path.display()),
+                        path: f.path.clone(),
                     });
                     grab.0 = false;
                 }
@@ -289,6 +308,22 @@ fn interact_keys(
     if keys.just_pressed(KeyCode::Escape) && inspector.0.is_some() {
         inspector.0 = None;
         grab.0 = true;
+    }
+
+    // R: reveal the file's location in Finder (never opens the file).
+    // While inspecting, reveals the inspected file; otherwise the hovered one.
+    if keys.just_pressed(KeyCode::KeyR) {
+        let path = match inspector.0.as_ref() {
+            Some(content) => Some(content.path().clone()),
+            None => hovered
+                .0
+                .as_ref()
+                .filter(|h| h.distance <= USE_RANGE)
+                .map(|h| h.file.path.clone()),
+        };
+        if let Some(path) = path {
+            reveal_in_finder(&path);
+        }
     }
 
     // F: grab or drop a prop.
@@ -325,6 +360,20 @@ fn read_text_preview(path: &std::path::Path, max_bytes: usize) -> String {
         text.push_str("\n\n… (truncated)");
     }
     text
+}
+
+/// Shows the file in its enclosing folder without opening the file: Finder's
+/// "reveal" on macOS, the parent directory in the file manager elsewhere.
+fn reveal_in_finder(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg("-R").arg(path).spawn();
+    #[cfg(not(target_os = "macos"))]
+    let result = std::process::Command::new("xdg-open")
+        .arg(path.parent().unwrap_or(path))
+        .spawn();
+    if let Err(err) = result {
+        warn!("failed to reveal {}: {err}", path.display());
+    }
 }
 
 /// Classic hex+ASCII dump of the file's first bytes.

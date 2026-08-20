@@ -149,7 +149,7 @@ fn build_hud(mut commands: Commands) {
 
     // Controls reference, bottom right.
     commands.spawn((
-        Text::new("WASD move · Shift sprint · Space jump\nE inspect · F grab · Click shoot/throw"),
+        Text::new("WASD move · Shift sprint · Space jump\nE inspect · R reveal in Finder · F grab · Click shoot/throw"),
         TextFont::from_font_size(13.0),
         TextColor(Color::srgba(1.0, 1.0, 1.0, 0.45)),
         Node {
@@ -221,6 +221,9 @@ fn update_tooltip(
                     }
                     _ if close_enough => hints.push("E inspect"),
                     _ => {}
+                }
+                if close_enough {
+                    hints.push("R reveal in Finder");
                 }
                 if info.is_prop && info.distance <= 5.0 {
                     hints.push("F grab");
@@ -441,7 +444,7 @@ fn rebuild_inspector(
     }
 
     commands.spawn((
-        Text::new("E / Esc close · scroll to read"),
+        Text::new("E / Esc close · R reveal in Finder · scroll to read"),
         TextFont::from_font_size(13.0),
         TextColor(TEXT_DIM),
         ChildOf(panel),

@@ -44,7 +44,7 @@ executes the files it shows.
 
 ## Everything opens in-game
 
-No file ever launches an external app or process:
+Files are never launched or opened by an external app:
 
 - **Text / code** — fullscreen reader with scrolling.
 - **Images** — fullscreen viewer.
@@ -53,6 +53,9 @@ No file ever launches an external app or process:
 - **Executables, data, unknown binaries** — classic hex+ASCII dump viewer.
 - **Video** — metadata card (video decoding is the one thing not done
   in-game).
+
+The one deliberate bridge back to the OS: press **R** to reveal a file's
+location in Finder — it selects the file in its folder without opening it.
 
 ## Run
 
@@ -79,6 +82,7 @@ development: `cargo run --features dev`.
 | Shift | Sprint |
 | Space | Jump |
 | E | Inspect: read text, view image, play audio, list archive, hex dump |
+| R | Reveal the file's location in Finder (does not open the file) |
 | F | Grab / drop a small prop (gravity-gun carry) |
 | Esc | Close overlay / release mouse |
 
