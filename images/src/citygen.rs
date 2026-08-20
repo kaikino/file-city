@@ -1,0 +1,260 @@
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+pub struct District { pub name: String, pub depth: usize }
+    // street lamp 0000  intensity=90000
+    // street lamp 0001  intensity=89999
+    // street lamp 0002  intensity=89998
+    // street lamp 0003  intensity=89997
+    // street lamp 0004  intensity=89996
+    // street lamp 0005  intensity=89995
+    // street lamp 0006  intensity=89994
+    // street lamp 0007  intensity=89993
+    // street lamp 0008  intensity=89992
+    // street lamp 0009  intensity=89991
+    // street lamp 0010  intensity=89990
+    // street lamp 0011  intensity=89989
+    // street lamp 0012  intensity=89988
+    // street lamp 0013  intensity=89987
+    // street lamp 0014  intensity=89986
+    // street lamp 0015  intensity=89985
+    // street lamp 0016  intensity=89984
+    // street lamp 0017  intensity=89983
+    // street lamp 0018  intensity=89982
+    // street lamp 0019  intensity=89981
+    // street lamp 0020  intensity=89980
+    // street lamp 0021  intensity=89979
+    // street lamp 0022  intensity=89978
+    // street lamp 0023  intensity=89977
+    // street lamp 0024  intensity=89976
+    // street lamp 0025  intensity=89975
+    // street lamp 0026  intensity=89974
+    // street lamp 0027  intensity=89973
+    // street lamp 0028  intensity=89972
+    // street lamp 0029  intensity=89971
+    // street lamp 0030  intensity=89970
+    // street lamp 0031  intensity=89969
+    // street lamp 0032  intensity=89968
+    // street lamp 0033  intensity=89967
+    // street lamp 0034  intensity=89966
+    // street lamp 0035  intensity=89965
+    // street lamp 0036  intensity=89964
+    // street lamp 0037  intensity=89963
+    // street lamp 0038  intensity=89962
+    // street lamp 0039  intensity=89961
+    // street lamp 0040  intensity=89960
+    // street lamp 0041  intensity=89959
+    // street lamp 0042  intensity=89958
+    // street lamp 0043  intensity=89957
+    // street lamp 0044  intensity=89956
+    // street lamp 0045  intensity=89955
+    // street lamp 0046  intensity=89954
+    // street lamp 0047  intensity=89953
+    // street lamp 0048  intensity=89952
+    // street lamp 0049  intensity=89951
+    // street lamp 0050  intensity=89950
+    // street lamp 0051  intensity=89949
+    // street lamp 0052  intensity=89948
+    // street lamp 0053  intensity=89947
+    // street lamp 0054  intensity=89946
+    // street lamp 0055  intensity=89945
+    // street lamp 0056  intensity=89944
+    // street lamp 0057  intensity=89943
+    // street lamp 0058  intensity=89942
+    // street lamp 0059  intensity=89941
+    // street lamp 0060  intensity=89940
+    // street lamp 0061  intensity=89939
+    // street lamp 0062  intensity=89938
+    // street lamp 0063  intensity=89937
+    // street lamp 0064  intensity=89936
+    // street lamp 0065  intensity=89935
+    // street lamp 0066  intensity=89934
+    // street lamp 0067  intensity=89933
+    // street lamp 0068  intensity=89932
+    // street lamp 0069  intensity=89931
+    // street lamp 0070  intensity=89930
+    // street lamp 0071  intensity=89929
+    // street lamp 0072  intensity=89928
+    // street lamp 0073  intensity=89927
+    // street lamp 0074  intensity=89926
+    // street lamp 0075  intensity=89925
+    // street lamp 0076  intensity=89924
+    // street lamp 0077  intensity=89923
+    // street lamp 0078  intensity=89922
+    // street lamp 0079  intensity=89921
+    // street lamp 0080  intensity=89920
+    // street lamp 0081  intensity=89919
+    // street lamp 0082  intensity=89918
+    // street lamp 0083  intensity=89917
+    // street lamp 0084  intensity=89916
+    // street lamp 0085  intensity=89915
+    // street lamp 0086  intensity=89914
+    // street lamp 0087  intensity=89913
+    // street lamp 0088  intensity=89912
+    // street lamp 0089  intensity=89911
+    // street lamp 0090  intensity=89910
+    // street lamp 0091  intensity=89909
+    // street lamp 0092  intensity=89908
+    // street lamp 0093  intensity=89907
+    // street lamp 0094  intensity=89906
+    // street lamp 0095  intensity=89905
+    // street lamp 0096  intensity=89904
+    // street lamp 0097  intensity=89903
+    // street lamp 0098  intensity=89902
+    // street lamp 0099  intensity=89901
+    // street lamp 0100  intensity=89900
+    // street lamp 0101  intensity=89899
+    // street lamp 0102  intensity=89898
+    // street lamp 0103  intensity=89897
+    // street lamp 0104  intensity=89896
+    // street lamp 0105  intensity=89895
+    // street lamp 0106  intensity=89894
+    // street lamp 0107  intensity=89893
+    // street lamp 0108  intensity=89892
+    // street lamp 0109  intensity=89891
+    // street lamp 0110  intensity=89890
+    // street lamp 0111  intensity=89889
+    // street lamp 0112  intensity=89888
+    // street lamp 0113  intensity=89887
+    // street lamp 0114  intensity=89886
+    // street lamp 0115  intensity=89885
+    // street lamp 0116  intensity=89884
+    // street lamp 0117  intensity=89883
+    // street lamp 0118  intensity=89882
+    // street lamp 0119  intensity=89881
+    // street lamp 0120  intensity=89880
+    // street lamp 0121  intensity=89879
+    // street lamp 0122  intensity=89878
+    // street lamp 0123  intensity=89877
+    // street lamp 0124  intensity=89876
+    // street lamp 0125  intensity=89875
+    // street lamp 0126  intensity=89874
+    // street lamp 0127  intensity=89873
+    // street lamp 0128  intensity=89872
+    // street lamp 0129  intensity=89871
+    // street lamp 0130  intensity=89870
+    // street lamp 0131  intensity=89869
+    // street lamp 0132  intensity=89868
+    // street lamp 0133  intensity=89867
+    // street lamp 0134  intensity=89866
+    // street lamp 0135  intensity=89865
+    // street lamp 0136  intensity=89864
+    // street lamp 0137  intensity=89863
+    // street lamp 0138  intensity=89862
+    // street lamp 0139  intensity=89861
+    // street lamp 0140  intensity=89860
+    // street lamp 0141  intensity=89859
+    // street lamp 0142  intensity=89858
+    // street lamp 0143  intensity=89857
+    // street lamp 0144  intensity=89856
+    // street lamp 0145  intensity=89855
+    // street lamp 0146  intensity=89854
+    // street lamp 0147  intensity=89853
+    // street lamp 0148  intensity=89852
+    // street lamp 0149  intensity=89851
+    // street lamp 0150  intensity=89850
+    // street lamp 0151  intensity=89849
+    // street lamp 0152  intensity=89848
+    // street lamp 0153  intensity=89847
+    // street lamp 0154  intensity=89846
+    // street lamp 0155  intensity=89845
+    // street lamp 0156  intensity=89844
+    // street lamp 0157  intensity=89843
+    // street lamp 0158  intensity=89842
+    // street lamp 0159  intensity=89841
+    // street lamp 0160  intensity=89840
+    // street lamp 0161  intensity=89839
+    // street lamp 0162  intensity=89838
+    // street lamp 0163  intensity=89837
+    // street lamp 0164  intensity=89836
+    // street lamp 0165  intensity=89835
+    // street lamp 0166  intensity=89834
+    // street lamp 0167  intensity=89833
+    // street lamp 0168  intensity=89832
+    // street lamp 0169  intensity=89831
+    // street lamp 0170  intensity=89830
+    // street lamp 0171  intensity=89829
+    // street lamp 0172  intensity=89828
+    // street lamp 0173  intensity=89827
+    // street lamp 0174  intensity=89826
+    // street lamp 0175  intensity=89825
+    // street lamp 0176  intensity=89824
+    // street lamp 0177  intensity=89823
+    // street lamp 0178  intensity=89822
+    // street lamp 0179  intensity=89821
+    // street lamp 0180  intensity=89820
+    // street lamp 0181  intensity=89819
+    // street lamp 0182  intensity=89818
+    // street lamp 0183  intensity=89817
+    // street lamp 0184  intensity=89816
+    // street lamp 0185  intensity=89815
+    // street lamp 0186  intensity=89814
+    // street lamp 0187  intensity=89813
+    // street lamp 0188  intensity=89812
+    // street lamp 0189  intensity=89811
+    // street lamp 0190  intensity=89810
+    // street lamp 0191  intensity=89809
+    // street lamp 0192  intensity=89808
+    // street lamp 0193  intensity=89807
+    // street lamp 0194  intensity=89806
+    // street lamp 0195  intensity=89805
+    // street lamp 0196  intensity=89804
+    // street lamp 0197  intensity=89803
+    // street lamp 0198  intensity=89802
+    // street lamp 0199  intensity=89801
+    // street lamp 0200  intensity=89800
+    // street lamp 0201  intensity=89799
+    // street lamp 0202  intensity=89798
+    // street lamp 0203  intensity=89797
+    // street lamp 0204  intensity=89796
+    // street lamp 0205  intensity=89795
+    // street lamp 0206  intensity=89794
+    // street lamp 0207  intensity=89793
+    // street lamp 0208  intensity=89792
+    // street lamp 0209  intensity=89791
+    // street lamp 0210  intensity=89790
+    // street lamp 0211  intensity=89789
+    // street lamp 0212  intensity=89788
+    // street lamp 0213  intensity=89787
+    // street lamp 0214  intensity=89786
+    // street lamp 0215  intensity=89785
+    // street lamp 0216  intensity=89784
+    // street lamp 0217  intensity=89783
+    // street lamp 0218  intensity=89782
+    // street lamp 0219  intensity=89781

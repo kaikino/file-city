@@ -11,6 +11,19 @@ Built with [Bevy 0.19](https://bevy.org) (rendering via wgpu/Metal — runs
 natively on Apple Silicon) and [Avian](https://github.com/avianphysics/avian)
 physics.
 
+The shots below were captured in-engine from the bundled `images/` demo city
+(a mix of photos, source, data, audio and archives).
+
+![Image files as glowing storefront posters in the photos district at dusk](screenshots/gallery-dusk.png)
+
+![Vertical neon filename and scrolling source on a night street](screenshots/neon-night.png)
+
+![Alley at night: a photo facade, a code marquee, and a zebra crossing](screenshots/alley-night.png)
+
+![Looking into the city from the south gate at dusk](screenshots/street-dusk.png)
+
+![Daytime rooftops: packed blocks, antennas, and district signs](screenshots/aerial-day.png)
+
 ## The city
 
 - Buildings line the streets in packed rows like a real Japanese shopping
@@ -78,8 +91,8 @@ weight files. Those get a hex dump or a short explanation plus **R**.
 # Scan your home directory (default)
 cargo run --release
 
-# Scan a specific folder
-cargo run --release -- ~/Documents
+# Scan the bundled demo city (photos, source, data, audio)
+cargo run --release -- images
 
 # Options
 cargo run --release -- ~/code --depth 4 --max-files 2500
@@ -113,6 +126,7 @@ and details of whatever the crosshair points at.
 | `--max-files N` | Global file cap | 1600 |
 | `--tod T` | Start time of day, 0..1 (0 = midnight, 0.5 = noon) | 0.77 (dusk) |
 | `--shot out.png` | Debug: screenshot shortly after load, then exit | off |
+| `--shot-view NAME` | Camera for `--shot`: `street`, `neon`, `gallery`, `aerial`, `alley`, `marquee` | `street` |
 
 ## Notes
 

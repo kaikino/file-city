@@ -148,6 +148,8 @@ pub struct ScanConfig {
     pub max_files: usize,
     /// Debug: save a screenshot here shortly after the city loads, then exit.
     pub shot: Option<PathBuf>,
+    /// Camera preset for `--shot`: street, neon, gallery, aerial, alley.
+    pub shot_view: String,
     /// Starting time of day, 0..1 (0 = midnight, 0.5 = noon).
     pub tod: Option<f32>,
 }
@@ -160,6 +162,7 @@ impl Default for ScanConfig {
             max_depth: 3,
             max_files: 1600,
             shot: None,
+            shot_view: "street".into(),
             tod: None,
         }
     }

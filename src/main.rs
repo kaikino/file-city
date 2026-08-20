@@ -51,6 +51,11 @@ fn parse_args() -> ScanConfig {
             "--shot" => {
                 cfg.shot = args.next().map(PathBuf::from);
             }
+            "--shot-view" => {
+                if let Some(v) = args.next() {
+                    cfg.shot_view = v;
+                }
+            }
             "--tod" => {
                 cfg.tod = args.next().and_then(|v| v.parse().ok());
             }
@@ -107,21 +112,28 @@ fn main() {
 }
 
 /// With `--shot out.png`: capture a screenshot a few seconds into gameplay
-/// and exit. Renders a mirror of the player camera into an offscreen texture,
-/// because reading back the window surface is not supported everywhere.
+/// and exit. Renders a dedicated camera into an offscreen texture, because
+/// reading back the window surface is not supported everywhere.
+/// `--shot-view street|neon|gallery|aerial|alley` picks the framing.
 fn debug_screenshot(
     mut commands: Commands,
     cfg: Res<ScanConfig>,
     mut frames: Local<u32>,
     mut exit: MessageWriter<AppExit>,
     mut images: ResMut<Assets<Image>>,
-    player_cam: Query<&GlobalTransform, With<player::PlayerCamera>>,
     mut player_body: Query<(&mut Transform, &mut LinearVelocity), With<player::Player>>,
     signs: Query<&GlobalTransform, With<citygen::SignText>>,
+    neon: Query<&GlobalTransform, With<citygen::NeonNameSign>>,
+    galleries: Query<&GlobalTransform, With<citygen::ImageScreen>>,
+    marquees: Query<&GlobalTransform, With<citygen::TextScreen>>,
+    gates: Option<Res<citygen::Gates>>,
+    meta: Option<Res<citygen::CityMeta>>,
+    night: Option<Res<atmo::NightFactor>>,
     shot_target: Option<Res<ShotTarget>>,
 ) {
     use bevy::asset::RenderAssetUsages;
     use bevy::camera::{Hdr, RenderTarget};
+    use bevy::pbr::DistanceFog;
     use bevy::post_process::bloom::Bloom;
     use bevy::render::render_resource::{
         Extent3d, TextureDimension, TextureFormat, TextureUsages,
@@ -131,20 +143,29 @@ fn debug_screenshot(
     let Some(path) = cfg.shot.clone() else { return };
     *frames += 1;
 
-    // Drop the player into the city center so the capture shows active
-    // screens, signs and props at close range.
-    if *frames == 100 {
+    let pose = shot_pose(
+        &cfg.shot_view,
+        &signs,
+        &neon,
+        &galleries,
+        &marquees,
+        gates.as_deref(),
+        meta.as_deref(),
+    );
+
+    // Stand the player at the camera so nearby screens and neon light up.
+    if *frames == 90 {
         if let Ok((mut transform, mut velocity)) = player_body.single_mut() {
-            transform.translation = Vec3::new(0.0, 6.0, 0.0);
+            transform.translation = pose.eye;
             velocity.0 = Vec3::ZERO;
         }
     }
 
-    if *frames == 260 {
+    if *frames == 360 {
         let mut image = Image::new_fill(
             Extent3d {
-                width: 1280,
-                height: 800,
+                width: 1920,
+                height: 1080,
                 depth_or_array_layers: 1,
             },
             TextureDimension::D2,
@@ -157,24 +178,12 @@ fn debug_screenshot(
             | TextureUsages::COPY_SRC
             | TextureUsages::RENDER_ATTACHMENT;
         let handle = images.add(image);
-        // Frame the nearest district sign from a raised vantage so the shot
-        // shows signs, screens and the city layout together.
-        let player_pos = player_cam
-            .single()
-            .map(|g| g.translation())
-            .unwrap_or(Vec3::new(0.0, 2.0, 0.0));
-        let sign_pos = signs
-            .iter()
-            .map(|g| g.translation())
-            .min_by(|a, b| {
-                a.distance_squared(player_pos)
-                    .total_cmp(&b.distance_squared(player_pos))
-            })
-            .unwrap_or(player_pos + Vec3::new(0.0, 0.0, -20.0));
-        // Street-level view down the road the sign hangs over, so facades,
-        // neon and screens line both sides of the frame.
-        let transform = Transform::from_translation(sign_pos + Vec3::new(17.0, -1.6, 1.5))
-            .looking_at(sign_pos + Vec3::new(-30.0, -2.4, 0.5), Vec3::Y);
+        let nf = night.map(|n| n.0).unwrap_or(0.7);
+        let fog_end = meta
+            .map(|m| (m.half_extent * 2.4).clamp(150.0, 420.0) * (1.0 - 0.42 * nf))
+            .unwrap_or(220.0);
+        let fog_color = Vec3::new(0.62, 0.74, 0.88).lerp(Vec3::new(0.05, 0.045, 0.11), nf);
+        let transform = Transform::from_translation(pose.eye).looking_at(pose.at, Vec3::Y);
         commands.spawn((
             Camera3d::default(),
             Hdr,
@@ -186,24 +195,155 @@ fn debug_screenshot(
             },
             RenderTarget::Image(handle.clone().into()),
             Projection::Perspective(PerspectiveProjection {
-                fov: 62f32.to_radians(),
+                fov: pose.fov.to_radians(),
                 ..default()
             }),
             transform,
             Bloom::NATURAL,
-            bevy::camera::Exposure { ev100: 9.7 },
+            bevy::camera::Exposure {
+                ev100: 9.7 - 1.8 * nf,
+            },
+            DistanceFog {
+                color: Color::srgb(fog_color.x, fog_color.y, fog_color.z),
+                falloff: FogFalloff::Linear {
+                    start: fog_end * (0.35 - 0.16 * nf),
+                    end: fog_end,
+                },
+                ..default()
+            },
         ));
         commands.insert_resource(ShotTarget(handle));
     }
-    if *frames == 330 {
+    if *frames == 480 {
         if let Some(target) = shot_target {
             commands
                 .spawn(Screenshot(RenderTarget::Image(target.0.clone().into())))
                 .observe(save_to_disk(path));
         }
     }
-    if *frames > 400 {
+    if *frames > 560 {
         exit.write(AppExit::Success);
+    }
+}
+
+struct ShotPose {
+    eye: Vec3,
+    at: Vec3,
+    fov: f32,
+}
+
+fn shot_pose(
+    view: &str,
+    signs: &Query<&GlobalTransform, With<citygen::SignText>>,
+    neon: &Query<&GlobalTransform, With<citygen::NeonNameSign>>,
+    galleries: &Query<&GlobalTransform, With<citygen::ImageScreen>>,
+    marquees: &Query<&GlobalTransform, With<citygen::TextScreen>>,
+    gates: Option<&citygen::Gates>,
+    meta: Option<&citygen::CityMeta>,
+) -> ShotPose {
+    let origin = Vec3::new(0.0, 2.0, 0.0);
+    match view {
+        "aerial" => {
+            let half = meta.map(|m| m.half_extent).unwrap_or(40.0);
+            ShotPose {
+                eye: Vec3::new(-half * 0.55, 22.0, half * 0.85),
+                at: Vec3::new(0.0, 3.5, -half * 0.05),
+                fov: 52.0,
+            }
+        }
+        "neon" => {
+            let g = neon
+                .iter()
+                .map(|t| t)
+                .min_by(|a, b| {
+                    a.translation()
+                        .distance_squared(origin)
+                        .total_cmp(&b.translation().distance_squared(origin))
+                });
+            if let Some(g) = g {
+                // Quads face +Z (Bevy back()); forward() would put us behind the sign.
+                let face = g.back();
+                ShotPose {
+                    eye: g.translation() + face * 6.0 + Vec3::Y * 0.15,
+                    at: g.translation() + Vec3::Y * -0.2,
+                    fov: 52.0,
+                }
+            } else {
+                default_street(meta, signs, gates)
+            }
+        }
+        "gallery" => {
+            let g = galleries.iter().min_by(|a, b| {
+                a.translation()
+                    .distance_squared(origin)
+                    .total_cmp(&b.translation().distance_squared(origin))
+            });
+            if let Some(g) = g {
+                let face = g.back();
+                ShotPose {
+                    eye: g.translation() + face * 8.0 + Vec3::Y * 0.1,
+                    at: g.translation() + Vec3::Y * -0.3,
+                    fov: 55.0,
+                }
+            } else {
+                default_street(meta, signs, gates)
+            }
+        }
+        "alley" => {
+            if let Some((gate, out)) = gates.and_then(|g| g.0.first()).copied() {
+                let out3 = Vec3::new(out.x, 0.0, out.y);
+                ShotPose {
+                    eye: gate + Vec3::Y * 1.65 + out3 * 5.5,
+                    at: gate + Vec3::Y * 2.6 - out3 * 16.0,
+                    fov: 66.0,
+                }
+            } else {
+                default_street(meta, signs, gates)
+            }
+        }
+        "marquee" => {
+            let g = marquees.iter().min_by(|a, b| {
+                a.translation()
+                    .distance_squared(origin)
+                    .total_cmp(&b.translation().distance_squared(origin))
+            });
+            if let Some(g) = g {
+                let face = g.back();
+                ShotPose {
+                    eye: g.translation() + face * 7.2 + Vec3::new(1.4, 0.0, 0.0),
+                    at: g.translation() + Vec3::Y * -0.4,
+                    fov: 58.0,
+                }
+            } else {
+                default_street(meta, signs, gates)
+            }
+        }
+        _ => default_street(meta, signs, gates),
+    }
+}
+
+fn default_street(
+    meta: Option<&citygen::CityMeta>,
+    signs: &Query<&GlobalTransform, With<citygen::SignText>>,
+    gates: Option<&citygen::Gates>,
+) -> ShotPose {
+    let _ = (signs, gates);
+    if let Some(m) = meta {
+        return ShotPose {
+            eye: m.spawn_pos + Vec3::new(0.0, 0.4, 2.0),
+            at: Vec3::new(0.0, 4.0, m.spawn_pos.z - 30.0),
+            fov: 62.0,
+        };
+    }
+    let sign = signs
+        .iter()
+        .next()
+        .map(|g| g.translation())
+        .unwrap_or(Vec3::new(0.0, 4.0, 0.0));
+    ShotPose {
+        eye: sign + Vec3::new(14.0, -1.4, 2.0),
+        at: sign + Vec3::new(-24.0, -2.2, 0.0),
+        fov: 64.0,
     }
 }
 
