@@ -23,6 +23,7 @@ impl Plugin for AtmoPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(TimeOfDay { t: START_T })
             .insert_resource(NightFactor(1.0))
+            .add_systems(Startup, apply_tod_flag)
             .add_systems(OnEnter(AppState::Playing), setup_sky)
             .add_systems(
                 Update,
@@ -41,6 +42,12 @@ pub struct TimeOfDay {
 /// 0 in full daylight, 1 at night; drives neon/window/lamp intensity.
 #[derive(Resource)]
 pub struct NightFactor(pub f32);
+
+fn apply_tod_flag(cfg: Res<crate::scan::ScanConfig>, mut tod: ResMut<TimeOfDay>) {
+    if let Some(t) = cfg.tod {
+        tod.t = t.rem_euclid(1.0);
+    }
+}
 
 #[derive(Component)]
 struct Sun;

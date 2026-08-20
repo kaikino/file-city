@@ -50,6 +50,9 @@ fn parse_args() -> ScanConfig {
             "--shot" => {
                 cfg.shot = args.next().map(PathBuf::from);
             }
+            "--tod" => {
+                cfg.tod = args.next().and_then(|v| v.parse().ok());
+            }
             other if !other.starts_with('-') => {
                 let expanded = if other == "~" || other.starts_with("~/") {
                     let home = std::env::var("HOME").unwrap_or_default();

@@ -17,6 +17,9 @@ image = { version = "0.25", default-features = false, features = [
     "ico",
 ] }
 rand = { version = "0.9", features = ["small_rng"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+tar = "0.4.46"
+flate2 = "1.1.9"
 
 [features]
 # Fast iteration builds: cargo run --features dev

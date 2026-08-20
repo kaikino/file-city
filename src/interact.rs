@@ -1,6 +1,8 @@
 //! FPS-style interaction: crosshair raycast with highlight, inspect (E),
-//! open in default app (O), gravity-gun grab/carry/throw (F / click), and
-//! physics projectiles (click with empty hands).
+//! gravity-gun grab/carry/throw (F / click), and physics projectiles (click
+//! with empty hands). Every file opens inside the game: text/code readers,
+//! image viewers, audio playback, archive listings and hex dumps for
+//! binaries. Nothing shells out to external apps.
 
 use std::path::PathBuf;
 
@@ -70,7 +72,6 @@ pub enum InspectorContent {
         title: String,
         body: String,
         meta: String,
-        path: PathBuf,
     },
     Image {
         title: String,
@@ -234,7 +235,6 @@ fn interact_keys(
                         title: f.name.clone(),
                         body,
                         meta: format!("{meta} · {}", f.path.display()),
-                        path: f.path.clone(),
                     });
                     grab.0 = false;
                 }
@@ -252,7 +252,15 @@ fn interact_keys(
                         name: f.name.clone(),
                     });
                 }
-                _ => {
+                FileKind::Archive => {
+                    inspector.0 = Some(InspectorContent::Text {
+                        title: format!("{} — contents", f.name),
+                        body: archive_listing(&f.path),
+                        meta: format!("{meta} · {}", f.path.display()),
+                    });
+                    grab.0 = false;
+                }
+                FileKind::Video => {
                     inspector.0 = Some(InspectorContent::Info {
                         title: f.name.clone(),
                         lines: vec![
@@ -260,8 +268,16 @@ fn interact_keys(
                             format!("Size:  {}", crate::scan::human_size(f.size)),
                             format!("Path:  {}", f.path.display()),
                             String::new(),
-                            "Press O to open it in the default app.".into(),
+                            "Video decoding is not supported in-game.".into(),
                         ],
+                    });
+                    grab.0 = false;
+                }
+                FileKind::Executable | FileKind::Data | FileKind::Other => {
+                    inspector.0 = Some(InspectorContent::Text {
+                        title: format!("{} — hex", f.name),
+                        body: hex_dump(&f.path, 4096, f.size),
+                        meta: format!("{meta} · {}", f.path.display()),
                     });
                     grab.0 = false;
                 }
@@ -273,20 +289,6 @@ fn interact_keys(
     if keys.just_pressed(KeyCode::Escape) && inspector.0.is_some() {
         inspector.0 = None;
         grab.0 = true;
-    }
-
-    // O: open the real file with the OS default app. While inspecting, O
-    // opens the inspected file; otherwise the hovered one.
-    if keys.just_pressed(KeyCode::KeyO) {
-        let path = match inspector.0.as_ref() {
-            Some(InspectorContent::Image { path, .. })
-            | Some(InspectorContent::Text { path, .. }) => Some(path.clone()),
-            Some(InspectorContent::Info { .. }) => None,
-            None => hovered.0.as_ref().map(|h| h.file.path.clone()),
-        };
-        if let Some(path) = path {
-            open_with_default_app(&path);
-        }
     }
 
     // F: grab or drop a prop.
@@ -325,14 +327,124 @@ fn read_text_preview(path: &std::path::Path, max_bytes: usize) -> String {
     text
 }
 
-fn open_with_default_app(path: &std::path::Path) {
-    #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open").arg(path).spawn();
-    #[cfg(not(target_os = "macos"))]
-    let result = std::process::Command::new("xdg-open").arg(path).spawn();
-    if let Err(err) = result {
-        warn!("failed to open {}: {err}", path.display());
+/// Classic hex+ASCII dump of the file's first bytes.
+fn hex_dump(path: &std::path::Path, max_bytes: usize, total_size: u64) -> String {
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(path) else {
+        return "<could not read file>".into();
+    };
+    let mut buf = Vec::with_capacity(max_bytes);
+    if file.take(max_bytes as u64).read_to_end(&mut buf).is_err() {
+        return "<could not read file>".into();
     }
+    let mut out = String::with_capacity(buf.len() * 4);
+    for (i, chunk) in buf.chunks(16).enumerate() {
+        out.push_str(&format!("{:08x}  ", i * 16));
+        for j in 0..16 {
+            match chunk.get(j) {
+                Some(b) => out.push_str(&format!("{b:02x} ")),
+                None => out.push_str("   "),
+            }
+            if j == 7 {
+                out.push(' ');
+            }
+        }
+        out.push_str(" |");
+        for b in chunk {
+            out.push(if (0x20..0x7f).contains(b) { *b as char } else { '.' });
+        }
+        out.push_str("|\n");
+    }
+    if total_size > buf.len() as u64 {
+        out.push_str(&format!(
+            "\n… {} of {} shown",
+            crate::scan::human_size(buf.len() as u64),
+            crate::scan::human_size(total_size)
+        ));
+    }
+    out
+}
+
+/// Lists the entries inside zip- and tar-family archives, entirely in-game.
+fn archive_listing(path: &std::path::Path) -> String {
+    const MAX_ENTRIES: usize = 400;
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+
+    let mut entries: Vec<(String, u64)> = Vec::new();
+    let mut more = 0usize;
+
+    let result: Result<(), String> = (|| {
+        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        match ext.as_str() {
+            "zip" | "jar" | "whl" => {
+                let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
+                for i in 0..zip.len() {
+                    let entry = zip.by_index_raw(i).map_err(|e| e.to_string())?;
+                    if entries.len() < MAX_ENTRIES {
+                        entries.push((entry.name().to_string(), entry.size()));
+                    } else {
+                        more += 1;
+                    }
+                }
+                Ok(())
+            }
+            "tar" => {
+                list_tar(file, &mut entries, &mut more, MAX_ENTRIES)
+            }
+            "tgz" | "crate" => {
+                list_tar(flate2::read::GzDecoder::new(file), &mut entries, &mut more, MAX_ENTRIES)
+            }
+            "gz" if name.ends_with(".tar.gz") => {
+                list_tar(flate2::read::GzDecoder::new(file), &mut entries, &mut more, MAX_ENTRIES)
+            }
+            _ => Err(format!("listing .{ext} archives is not supported")),
+        }
+    })();
+
+    match result {
+        Ok(()) => {
+            let mut out = format!("{} entries\n\n", entries.len() + more);
+            for (name, size) in &entries {
+                out.push_str(&format!("{:>9}  {}\n", crate::scan::human_size(*size), name));
+            }
+            if more > 0 {
+                out.push_str(&format!("\n… and {more} more"));
+            }
+            out
+        }
+        Err(err) => format!(
+            "Could not list contents: {err}\n\nFalling back to hex view:\n\n{}",
+            hex_dump(path, 1024, std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+        ),
+    }
+}
+
+fn list_tar<R: std::io::Read>(
+    reader: R,
+    entries: &mut Vec<(String, u64)>,
+    more: &mut usize,
+    max: usize,
+) -> Result<(), String> {
+    let mut archive = tar::Archive::new(reader);
+    for entry in archive.entries().map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entries.len() < max {
+            entries.push((
+                entry.path().map_err(|e| e.to_string())?.display().to_string(),
+                entry.size(),
+            ));
+        } else {
+            *more += 1;
+        }
+    }
+    Ok(())
 }
 
 fn hold_carried_prop(

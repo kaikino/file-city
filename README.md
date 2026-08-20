@@ -1,31 +1,58 @@
 # File City
 
 A first-person 3D filesystem explorer written in Rust. It scans a directory
-tree and generates a stylized city you can walk around in: directories become
-districts, files become buildings and objects you can inspect, read, watch,
-listen to and physically throw around.
+tree and generates a dense, Tokyo-inspired cyberpunk city you can walk around
+in: directories become districts, files become buildings packed
+shoulder-to-shoulder along streets and back alleys — with neon signs bearing
+their real file names — and everything can be inspected, read, viewed,
+listened to and physically thrown around without ever leaving the game.
 
 Built with [Bevy 0.19](https://bevy.org) (rendering via wgpu/Metal — runs
 natively on Apple Silicon) and [Avian](https://github.com/avianphysics/avian)
 physics.
 
+## The city
+
+- Buildings line the streets in packed rows like a real Japanese shopping
+  street, with narrow alleys cutting into district interiors.
+- Every building is seeded by its file's path hash: width, height, setback,
+  stacked tiers, rooftop water tanks / AC units / antennas, window patterns,
+  awnings and neon signage all vary — while height still scales with file
+  size.
+- Facades are dressed on multiple sides (screens front and back, side
+  displays, protruding vertical neon), so the city reads from every angle.
+- A physically-based atmosphere runs a full day-night cycle (~8 minutes):
+  the sun sweeps the sky, dusk brings the neon up, street lamps switch on,
+  windows light, fog thickens and rooftop beacons blink. Drones circle
+  overhead and puddles catch the lamp light.
+
 ## What files look like
 
 | File kind | In the city |
 | --- | --- |
-| Text / code | Obelisks with the file's actual text scrolling up a glowing marquee |
-| Images | Buildings with storefront screens showing the actual picture |
-| Audio | Pedestals with a pulsing floating orb; play/stop in game |
-| Video | Cinema blocks with a glowing marquee bar |
-| Archives | Treasure chests with golden lids |
-| Executables / libraries | Little robot statues with glowing eyes |
-| Data (db, pdf, models, …) | Office towers, height scales with file size |
-| Tiny files (<4 KB) | Physics props: crates and balls you can grab, kick and throw |
+| Text / code | Buildings with the file's actual text scrolling up glowing marquees (front and back) |
+| Images | Buildings whose storefront and side screens show the actual picture |
+| Audio | Buildings crowned with a pulsing orb on a rooftop pole; play/stop in game |
+| Video | Cinema fronts with a wide top screen and marquee bar |
+| Archives | Low gold-banded warehouses |
+| Executables / libraries | Buildings with robot statues (glowing eyes) on the roof |
+| Data (db, pdf, models, …) | The tallest corporate towers, with antennas and beacons |
+| Tiny files (<4 KB) | Street props: vending machines, crates and balls you can grab, kick and throw |
 
-Districts are laid out with a squarified treemap, separated by roads, walled
-at the top level, and labeled with floating signs. Everything is deterministic
-for a given folder. The game never writes to the files it shows; the only side
-effect is the explicit "open" action.
+Everything is deterministic for a given folder. The game never writes to or
+executes the files it shows.
+
+## Everything opens in-game
+
+No file ever launches an external app or process:
+
+- **Text / code** — fullscreen reader with scrolling.
+- **Images** — fullscreen viewer.
+- **Audio** — decoded and played by the engine (mp3/wav/flac/ogg).
+- **Archives** — zip/jar/whl/tar/tgz/crate contents listed in the reader.
+- **Executables, data, unknown binaries** — classic hex+ASCII dump viewer.
+- **Video** — metadata card (video decoding is the one thing not done
+  in-game).
 
 ## Run
 
@@ -51,8 +78,7 @@ development: `cargo run --features dev`.
 | WASD | Move |
 | Shift | Sprint |
 | Space | Jump |
-| E | Inspect what you're looking at (read text, view image, play audio) |
-| O | Open the file in its default app |
+| E | Inspect: read text, view image, play audio, list archive, hex dump |
 | F | Grab / drop a small prop (gravity-gun carry) |
 | Esc | Close overlay / release mouse |
 
@@ -66,6 +92,7 @@ and details of whatever the crosshair points at.
 | `<path>` | Root directory to scan | `$HOME` |
 | `--depth N` | Max directory depth | 3 |
 | `--max-files N` | Global file cap | 1600 |
+| `--tod T` | Start time of day, 0..1 (0 = midnight, 0.5 = noon) | 0.77 (dusk) |
 | `--shot out.png` | Debug: screenshot shortly after load, then exit | off |
 
 ## Notes
@@ -73,5 +100,5 @@ and details of whatever the crosshair points at.
 - Scanning skips hidden files, symlinks and noisy directories
   (`node_modules`, `target`, `Library`, …) and keeps the largest files per
   directory, so the city stays walkable.
-- Text/image screens light up as you approach and are freed when you leave,
-  keeping GPU memory bounded on big scans.
+- Text/image screens and neon name signs light up as you approach and are
+  freed when you leave, keeping GPU memory bounded on big scans.
