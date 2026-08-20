@@ -1,4 +1,5 @@
 mod citygen;
+mod filereps;
 mod interact;
 mod player;
 mod scan;
@@ -81,6 +82,7 @@ fn main() {
             citygen::CityGenPlugin,
             player::PlayerPlugin,
             interact::InteractPlugin,
+            filereps::FileRepsPlugin,
         ))
         .insert_resource(cfg)
         .init_state::<AppState>()
