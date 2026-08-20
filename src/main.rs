@@ -1,4 +1,5 @@
 mod citygen;
+mod player;
 mod scan;
 
 use avian3d::prelude::*;
@@ -68,16 +69,36 @@ fn main() {
             ..default()
         }))
         .add_plugins(PhysicsPlugins::default())
-        .add_plugins(citygen::CityGenPlugin)
+        .add_plugins((citygen::CityGenPlugin, player::PlayerPlugin))
         .insert_resource(cfg)
         .init_state::<AppState>()
-        .add_systems(Startup, setup_scan)
+        .add_systems(Startup, (setup_scan, setup_lighting))
         .add_systems(
             Update,
             (poll_scan, animate_loading_screen).run_if(in_state(AppState::Scanning)),
         )
         .add_systems(OnExit(AppState::Scanning), teardown_loading_screen)
         .run();
+}
+
+fn setup_lighting(mut commands: Commands, mut ambient: ResMut<GlobalAmbientLight>) {
+    ambient.color = Color::srgb(0.75, 0.85, 1.0);
+    ambient.brightness = 220.0;
+    commands.insert_resource(ClearColor(Color::srgb(0.48, 0.65, 0.86)));
+    commands.spawn((
+        DirectionalLight {
+            color: Color::srgb(1.0, 0.96, 0.88),
+            illuminance: 9200.0,
+            shadow_maps_enabled: true,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(
+            EulerRot::YXZ,
+            35f32.to_radians(),
+            -52f32.to_radians(),
+            0.0,
+        )),
+    ));
 }
 
 #[derive(Component)]

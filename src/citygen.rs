@@ -287,7 +287,7 @@ fn seed_for(path: &std::path::Path) -> u64 {
 // City construction
 // ---------------------------------------------------------------------------
 
-fn build_city(
+pub fn build_city(
     mut commands: Commands,
     tree: Res<CityTree>,
     mut meshes: ResMut<Assets<Mesh>>,
