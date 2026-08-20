@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
+use crate::buildings::BuildingBody;
 use crate::citygen::{FileRef, CityMeshes, Palette, Prop};
 use crate::player::{CursorGrabbed, Player, PlayerCamera};
 use crate::scan::FileKind;
@@ -151,35 +152,55 @@ fn hover_raycast(
     }
 }
 
+/// Buildings are multi-part: the root holds `FileRef` while the body meshes
+/// are `BuildingBody` children (props carry both on one entity). Highlight
+/// swaps materials on every body part of the hovered owner.
 fn apply_highlight(
     mut commands: Commands,
     hovered: Res<Hovered>,
     palette: Option<Res<Palette>>,
-    mut materials_q: Query<(Entity, &mut MeshMaterial3d<StandardMaterial>)>,
-    orig: Query<&OrigMaterial>,
-    highlighted: Query<Entity, With<OrigMaterial>>,
+    mut materials_q: Query<&mut MeshMaterial3d<StandardMaterial>>,
+    body_parts: Query<(), With<BuildingBody>>,
+    children_q: Query<&Children>,
+    parents: Query<&ChildOf>,
+    file_refs: Query<(), With<FileRef>>,
+    orig: Query<(Entity, &OrigMaterial)>,
 ) {
     let Some(palette) = palette else { return };
     let hovered_entity = hovered.0.as_ref().map(|h| h.entity);
 
-    // Restore anything highlighted that is no longer hovered.
-    for entity in &highlighted {
-        if Some(entity) != hovered_entity {
-            if let (Ok(orig_mat), Ok((_, mut mat))) = (orig.get(entity), materials_q.get_mut(entity))
-            {
+    // Restore parts whose owning FileRef entity is no longer hovered.
+    for (entity, orig_mat) in &orig {
+        let owner = if file_refs.contains(entity) {
+            entity
+        } else {
+            parents.get(entity).map(|c| c.0).unwrap_or(entity)
+        };
+        if Some(owner) != hovered_entity {
+            if let Ok(mut mat) = materials_q.get_mut(entity) {
                 mat.0 = orig_mat.0.clone();
             }
             commands.entity(entity).remove::<OrigMaterial>();
         }
     }
 
-    // Highlight the newly hovered entity.
+    // Highlight every body part of the newly hovered owner.
     if let Some(info) = &hovered.0 {
-        if orig.get(info.entity).is_err() {
-            if let Ok((entity, mut mat)) = materials_q.get_mut(info.entity) {
-                let highlight = palette.highlight[&info.file.kind].clone();
-                commands.entity(entity).insert(OrigMaterial(mat.0.clone()));
-                mat.0 = highlight;
+        let highlight = palette.highlight[&info.file.kind].clone();
+        let mut targets: Vec<Entity> = Vec::new();
+        if body_parts.contains(info.entity) {
+            targets.push(info.entity);
+        }
+        if let Ok(children) = children_q.get(info.entity) {
+            targets.extend(children.iter().filter(|c| body_parts.contains(*c)));
+        }
+        for target in targets {
+            if orig.contains(target) {
+                continue;
+            }
+            if let Ok(mut mat) = materials_q.get_mut(target) {
+                commands.entity(target).insert(OrigMaterial(mat.0.clone()));
+                mat.0 = highlight.clone();
             }
         }
     }

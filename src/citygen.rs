@@ -1,5 +1,7 @@
-//! Turns the scanned `DirNode` tree into a physical city: districts laid out
-//! with a squarified treemap, buildings per file, walls, slabs and signs.
+//! Turns the scanned `DirNode` tree into a dense, Japanese-style city.
+//! Districts come from a squarified treemap; inside each district, files
+//! become buildings packed shoulder-to-shoulder along the streets (perimeter
+//! rows) and back alleys (interior rows), with hash-seeded variety.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -11,6 +13,7 @@ use bevy::prelude::*;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+use crate::buildings::{spawn_building, spawn_prop};
 use crate::scan::{DirNode, FileEntry, FileKind};
 use crate::{AppState, CityTree};
 
@@ -58,6 +61,17 @@ pub struct ImageScreen {
 #[derive(Component)]
 pub struct SignText(pub String);
 
+/// Vertical neon shop sign showing the file name (rendered on approach).
+#[derive(Component)]
+pub struct NeonNameSign {
+    pub name: String,
+    pub hue_seed: u64,
+}
+
+/// Red aircraft-warning light on tall rooftops (pulsed at night).
+#[derive(Component)]
+pub struct Beacon;
+
 /// Decorative element that bobs up and down.
 #[derive(Component)]
 pub struct Bobber {
@@ -76,6 +90,10 @@ pub struct District {
 #[derive(Resource, Default)]
 pub struct Districts(pub Vec<District>);
 
+/// Street-corner points (perimeter alley gaps) used for lamps and crosswalks.
+#[derive(Resource, Default)]
+pub struct Gates(pub Vec<Vec3>);
+
 /// Global facts about the generated city.
 #[derive(Resource)]
 pub struct CityMeta {
@@ -92,22 +110,40 @@ pub struct CityMeshes {
     pub quad: Handle<Mesh>,
 }
 
+pub const NEON_COLORS: [Color; 6] = [
+    Color::srgb(1.0, 0.18, 0.53),  // pink
+    Color::srgb(0.0, 0.90, 1.0),   // cyan
+    Color::srgb(0.62, 0.30, 1.0),  // purple
+    Color::srgb(1.0, 0.55, 0.12),  // orange
+    Color::srgb(0.25, 1.0, 0.55),  // green
+    Color::srgb(1.0, 0.85, 0.25),  // yellow
+];
+
 /// Shared material palette, keyed by role.
 #[derive(Resource)]
 pub struct Palette {
-    pub body: HashMap<FileKind, Handle<StandardMaterial>>,
+    /// Four concrete-tinted shades per file kind.
+    pub body: HashMap<FileKind, [Handle<StandardMaterial>; 4]>,
     pub highlight: HashMap<FileKind, Handle<StandardMaterial>>,
-    pub slabs: Vec<Handle<StandardMaterial>>,
+    pub slab: Handle<StandardMaterial>,
+    pub sidewalk: Handle<StandardMaterial>,
     pub ground: Handle<StandardMaterial>,
-    pub wall: Handle<StandardMaterial>,
     pub roof: Handle<StandardMaterial>,
+    pub dark_metal: Handle<StandardMaterial>,
+    pub gold_trim: Handle<StandardMaterial>,
     pub screen_off: Handle<StandardMaterial>,
     pub sign_bg: Handle<StandardMaterial>,
     pub orb: Handle<StandardMaterial>,
     pub marquee: Handle<StandardMaterial>,
-    pub chest_trim: Handle<StandardMaterial>,
     pub eye: Handle<StandardMaterial>,
     pub projectile: Handle<StandardMaterial>,
+    pub neon: [Handle<StandardMaterial>; 6],
+    pub neon_flicker: Handle<StandardMaterial>,
+    pub window_lit: Handle<StandardMaterial>,
+    pub window_dark: Handle<StandardMaterial>,
+    pub awning: [Handle<StandardMaterial>; 2],
+    pub vend_front: [Handle<StandardMaterial>; 2],
+    pub beacon: Handle<StandardMaterial>,
 }
 
 pub fn kind_color(kind: FileKind) -> Color {
@@ -122,6 +158,25 @@ pub fn kind_color(kind: FileKind) -> Color {
         FileKind::Data => Color::srgb(0.34, 0.80, 0.60),
         FileKind::Other => Color::srgb(0.60, 0.65, 0.70),
     }
+}
+
+/// Buildings read as concrete tinted toward the kind color, in four shades.
+fn body_color(kind: FileKind, shade: usize) -> Color {
+    let base = kind_color(kind).to_srgba();
+    let gray = 0.42;
+    let mix = 0.38;
+    let s = [0.62, 0.82, 1.0, 1.22][shade];
+    Color::srgb(
+        (gray * (1.0 - mix) + base.red * mix) * s,
+        (gray * (1.0 - mix) + base.green * mix) * s,
+        (gray * (1.0 - mix) + base.blue * mix) * s,
+    )
+}
+
+pub fn seed_for(path: &std::path::Path) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut h);
+    h.finish()
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +231,7 @@ pub fn squarify(weights: &[f32], rect: Rect2) -> Vec<Rect2> {
     let areas: Vec<f32> = order.iter().map(|&i| weights[i] * scale).collect();
 
     let mut remaining = rect;
-    let mut row: Vec<usize> = Vec::new(); // indices into `order`/`areas`
+    let mut row: Vec<usize> = Vec::new();
 
     fn worst(row: &[usize], areas: &[f32], side: f32) -> f32 {
         let sum: f32 = row.iter().map(|&i| areas[i]).sum();
@@ -206,7 +261,6 @@ pub fn squarify(weights: &[f32], rect: Rect2) -> Vec<Rect2> {
         }
         let horizontal = remaining.size.x >= remaining.size.y;
         if horizontal {
-            // Strip on the left, items stacked along y.
             let strip_w = (sum / remaining.size.y).min(remaining.size.x);
             let mut y = remaining.min.y;
             for &i in row {
@@ -255,33 +309,27 @@ pub fn squarify(weights: &[f32], rect: Rect2) -> Vec<Rect2> {
 // ---------------------------------------------------------------------------
 
 fn file_weight(f: &FileEntry) -> f32 {
-    (3.0 + (f.size as f32 + 1.0).log2() * 0.75).clamp(3.0, 30.0)
+    (3.0 + (f.size as f32 + 1.0).log2() * 0.6).clamp(3.0, 24.0)
 }
 
 fn dir_weight(d: &DirNode) -> f32 {
     let children: f32 = d.dirs.iter().map(dir_weight).sum::<f32>()
         + d.files.iter().map(file_weight).sum::<f32>();
-    children * 1.22 + 10.0
+    children * 1.18 + 12.0
 }
 
 fn road_width(depth: usize) -> f32 {
     match depth {
-        0 => 4.6,
-        1 => 3.0,
-        2 => 2.1,
-        _ => 1.5,
+        0 => 7.0,
+        1 => 5.0,
+        2 => 3.6,
+        _ => 2.8,
     }
 }
 
-fn slab_top(depth: usize) -> f32 {
-    0.06 + depth as f32 * 0.05
-}
-
-fn seed_for(path: &std::path::Path) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut h);
-    h.finish()
-}
+pub const SLAB_TOP: f32 = 0.12;
+const ROW_DEPTH: f32 = 6.0;
+const PROP_SIZE_LIMIT: u64 = 4096;
 
 // ---------------------------------------------------------------------------
 // City construction
@@ -299,6 +347,73 @@ pub fn build_city(
         cylinder: meshes.add(Cylinder::new(0.5, 1.0)),
         quad: meshes.add(Rectangle::new(1.0, 1.0)),
     };
+    let palette = make_palette(&mut materials);
+
+    // --- Root layout ------------------------------------------------------
+    let root = &tree.0;
+    let total_weight = dir_weight(root);
+    let side = (total_weight * 7.0).sqrt().clamp(40.0, 420.0);
+    let root_rect = Rect2 {
+        min: Vec2::splat(-side * 0.5),
+        size: Vec2::splat(side),
+    };
+
+    // Asphalt ground extending past the city.
+    let ground_side = side + 140.0;
+    commands.spawn((
+        Mesh3d(city_meshes.cube.clone()),
+        MeshMaterial3d(palette.ground.clone()),
+        Transform::from_xyz(0.0, -0.3, 0.0).with_scale(Vec3::new(ground_side, 0.6, ground_side)),
+        RigidBody::Static,
+        Collider::cuboid(1.0, 1.0, 1.0),
+    ));
+
+    let mut districts = Districts::default();
+    let mut gates = Gates::default();
+    let mut ctx = SpawnCtx {
+        commands: &mut commands,
+        meshes: &city_meshes,
+        palette: &palette,
+        districts: &mut districts,
+        gates: &mut gates,
+        building_count: 0,
+    };
+    spawn_district(&mut ctx, root, root_rect, 0, root.name.clone());
+    info!(
+        "city built: {} districts, {} buildings, side {:.0}m",
+        ctx.districts.0.len(),
+        ctx.building_count,
+        side
+    );
+
+    let spawn_pos = Vec3::new(0.0, 2.0, root_rect.max().y + 6.0);
+    commands.insert_resource(CityMeta {
+        spawn_pos,
+        half_extent: side * 0.5,
+    });
+    commands.insert_resource(city_meshes);
+    commands.insert_resource(palette);
+    commands.insert_resource(districts);
+    commands.insert_resource(gates);
+}
+
+fn make_palette(materials: &mut Assets<StandardMaterial>) -> Palette {
+    let concrete = |color: Color, rough: f32| StandardMaterial {
+        base_color: color,
+        perceptual_roughness: rough,
+        ..default()
+    };
+    let neon = |color: Color| {
+        let l = LinearRgba::from(color);
+        StandardMaterial {
+            base_color: color,
+            emissive: l * 5.0,
+            unlit: true,
+            cull_mode: None,
+            double_sided: true,
+            ..default()
+        }
+    };
 
     let mut body = HashMap::new();
     let mut highlight = HashMap::new();
@@ -313,63 +428,55 @@ pub fn build_city(
         FileKind::Data,
         FileKind::Other,
     ] {
-        let color = kind_color(kind);
         body.insert(
             kind,
-            materials.add(StandardMaterial {
-                base_color: color,
-                perceptual_roughness: 0.85,
-                ..default()
-            }),
+            [0, 1, 2, 3].map(|s| materials.add(concrete(body_color(kind, s), 0.92))),
         );
+        let color = kind_color(kind);
         highlight.insert(
             kind,
             materials.add(StandardMaterial {
-                base_color: color.lighter(0.12),
-                emissive: LinearRgba::from(color) * 1.6,
+                base_color: color.lighter(0.10),
+                emissive: LinearRgba::from(color) * 1.8,
                 perceptual_roughness: 0.6,
                 ..default()
             }),
         );
     }
 
-    let slabs = (0..6)
-        .map(|d| {
-            materials.add(StandardMaterial {
-                base_color: Color::hsl(210.0 - d as f32 * 38.0, 0.16, 0.66 + d as f32 * 0.03),
-                perceptual_roughness: 0.95,
-                ..default()
-            })
-        })
-        .collect();
-
-    let palette = Palette {
+    Palette {
         body,
         highlight,
-        slabs,
+        slab: materials.add(concrete(Color::srgb(0.30, 0.31, 0.35), 0.95)),
+        sidewalk: materials.add(concrete(Color::srgb(0.42, 0.43, 0.47), 0.9)),
+        // Wet-look asphalt: dark and fairly smooth so lights catch on it.
         ground: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.205, 0.22, 0.245),
-            perceptual_roughness: 1.0,
+            base_color: Color::srgb(0.10, 0.105, 0.125),
+            perceptual_roughness: 0.35,
+            metallic: 0.05,
             ..default()
         }),
-        wall: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.78, 0.80, 0.84),
-            perceptual_roughness: 0.9,
+        roof: materials.add(concrete(Color::srgb(0.22, 0.235, 0.27), 0.95)),
+        dark_metal: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.16, 0.17, 0.20),
+            metallic: 0.6,
+            perceptual_roughness: 0.5,
             ..default()
         }),
-        roof: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.27, 0.30, 0.34),
-            perceptual_roughness: 0.9,
+        gold_trim: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.85, 0.68, 0.25),
+            metallic: 0.8,
+            perceptual_roughness: 0.35,
             ..default()
         }),
         screen_off: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.05, 0.07, 0.10),
-            emissive: LinearRgba::rgb(0.02, 0.05, 0.08),
-            perceptual_roughness: 0.4,
+            base_color: Color::srgb(0.04, 0.05, 0.08),
+            emissive: LinearRgba::rgb(0.02, 0.04, 0.07),
+            perceptual_roughness: 0.3,
             ..default()
         }),
         sign_bg: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.10, 0.12, 0.18),
+            base_color: Color::srgb(0.08, 0.09, 0.14),
             perceptual_roughness: 0.5,
             cull_mode: None,
             double_sided: true,
@@ -386,12 +493,6 @@ pub fn build_city(
             emissive: LinearRgba::rgb(2.6, 1.1, 0.25),
             ..default()
         }),
-        chest_trim: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.85, 0.68, 0.25),
-            metallic: 0.8,
-            perceptual_roughness: 0.35,
-            ..default()
-        }),
         eye: materials.add(StandardMaterial {
             base_color: Color::srgb(0.2, 1.0, 1.0),
             emissive: LinearRgba::rgb(0.4, 3.0, 3.0),
@@ -403,59 +504,53 @@ pub fn build_city(
             emissive: LinearRgba::rgb(4.0, 1.6, 0.3),
             ..default()
         }),
-    };
-
-    // --- Root layout ------------------------------------------------------
-    let root = &tree.0;
-    let total_weight = dir_weight(root);
-    let side = (total_weight * 10.0).sqrt().clamp(40.0, 460.0);
-    let root_rect = Rect2 {
-        min: Vec2::splat(-side * 0.5),
-        size: Vec2::splat(side),
-    };
-
-    // Ground slab (extends past the city for a horizon).
-    let ground_side = side + 120.0;
-    commands.spawn((
-        Mesh3d(city_meshes.cube.clone()),
-        MeshMaterial3d(palette.ground.clone()),
-        Transform::from_xyz(0.0, -0.3, 0.0).with_scale(Vec3::new(ground_side, 0.6, ground_side)),
-        RigidBody::Static,
-        Collider::cuboid(1.0, 1.0, 1.0),
-    ));
-
-    let mut districts = Districts::default();
-    let mut ctx = SpawnCtx {
-        commands: &mut commands,
-        meshes: &city_meshes,
-        palette: &palette,
-        districts: &mut districts,
-        sign_count: 0,
-    };
-    spawn_district(&mut ctx, root, root_rect, 0, root.name.clone());
-    info!(
-        "city built: {} districts, {} signs, side {:.0}m",
-        ctx.districts.0.len(),
-        ctx.sign_count,
-        side
-    );
-
-    let spawn_pos = Vec3::new(0.0, 2.0, root_rect.max().y + 7.0);
-    commands.insert_resource(CityMeta {
-        spawn_pos,
-        half_extent: side * 0.5,
-    });
-    commands.insert_resource(city_meshes);
-    commands.insert_resource(palette);
-    commands.insert_resource(districts);
+        neon: NEON_COLORS.map(|c| materials.add(neon(c))),
+        neon_flicker: materials.add(neon(Color::srgb(1.0, 0.25, 0.45))),
+        window_lit: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.25, 0.22, 0.16),
+            emissive: LinearRgba::rgb(1.4, 1.05, 0.55),
+            ..default()
+        }),
+        window_dark: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.10, 0.11, 0.15),
+            perceptual_roughness: 0.25,
+            metallic: 0.3,
+            ..default()
+        }),
+        awning: [
+            materials.add(concrete(Color::srgb(0.55, 0.16, 0.18), 0.8)),
+            materials.add(concrete(Color::srgb(0.14, 0.32, 0.45), 0.8)),
+        ],
+        vend_front: [
+            materials.add(StandardMaterial {
+                base_color: Color::srgb(0.9, 0.95, 1.0),
+                emissive: LinearRgba::rgb(0.9, 1.3, 1.6),
+                unlit: true,
+                ..default()
+            }),
+            materials.add(StandardMaterial {
+                base_color: Color::srgb(1.0, 0.4, 0.35),
+                emissive: LinearRgba::rgb(1.6, 0.5, 0.4),
+                unlit: true,
+                ..default()
+            }),
+        ],
+        beacon: materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.1, 0.1),
+            emissive: LinearRgba::rgb(4.0, 0.2, 0.2),
+            unlit: true,
+            ..default()
+        }),
+    }
 }
 
-struct SpawnCtx<'a, 'w, 's> {
-    commands: &'a mut Commands<'w, 's>,
-    meshes: &'a CityMeshes,
-    palette: &'a Palette,
-    districts: &'a mut Districts,
-    sign_count: usize,
+pub struct SpawnCtx<'a, 'w, 's> {
+    pub commands: &'a mut Commands<'w, 's>,
+    pub meshes: &'a CityMeshes,
+    pub palette: &'a Palette,
+    pub districts: &'a mut Districts,
+    pub gates: &'a mut Gates,
+    pub building_count: usize,
 }
 
 fn spawn_district(
@@ -465,21 +560,21 @@ fn spawn_district(
     depth: usize,
     display_path: String,
 ) {
-    if rect.size.x < 2.0 || rect.size.y < 2.0 {
+    if rect.size.x < 4.0 || rect.size.y < 4.0 {
         return;
     }
-    let top = slab_top(depth);
-    let slab_mat = ctx.palette.slabs[depth.min(ctx.palette.slabs.len() - 1)].clone();
     let center = rect.center();
 
+    // Curb-height slab with a lighter sidewalk ring on top.
     ctx.commands.spawn((
         Mesh3d(ctx.meshes.cube.clone()),
-        MeshMaterial3d(slab_mat),
-        Transform::from_xyz(center.x, top * 0.5, center.y)
-            .with_scale(Vec3::new(rect.size.x, top, rect.size.y)),
+        MeshMaterial3d(ctx.palette.slab.clone()),
+        Transform::from_xyz(center.x, SLAB_TOP * 0.5, center.y)
+            .with_scale(Vec3::new(rect.size.x, SLAB_TOP, rect.size.y)),
         RigidBody::Static,
         Collider::cuboid(1.0, 1.0, 1.0),
     ));
+    spawn_sidewalk_ring(ctx, rect);
 
     ctx.districts.0.push(District {
         rect,
@@ -487,21 +582,15 @@ fn spawn_district(
         depth,
     });
 
-    // Perimeter walls with a gate on each side, for top-level districts only.
-    if depth == 1 {
-        spawn_walls(ctx, rect, top);
-    }
-
-    // Floating name sign hovering just outside the south edge (near the gate).
-    if depth >= 1 && depth <= 2 && rect.size.x > 6.0 {
-        ctx.sign_count += 1;
-        let sign_w = (rect.size.x * 0.55).clamp(5.0, 11.0);
-        let sign_y = top + 3.4;
+    // Hanging district name sign over the south gate.
+    if depth >= 1 && depth <= 2 && rect.size.x > 8.0 {
+        let sign_w = (rect.size.x * 0.5).clamp(5.0, 11.0);
+        let sign_y = SLAB_TOP + 4.6;
         ctx.commands.spawn((
             Mesh3d(ctx.meshes.quad.clone()),
             MeshMaterial3d(ctx.palette.sign_bg.clone()),
-            Transform::from_xyz(center.x, sign_y, rect.max().y + 0.8)
-                .with_scale(Vec3::new(sign_w, sign_w * 0.25, 1.0)),
+            Transform::from_xyz(center.x, sign_y, rect.max().y + 0.6)
+                .with_scale(Vec3::new(sign_w, sign_w * 0.22, 1.0)),
             SignText(node.name.clone()),
             NotShadowCaster,
             Bobber {
@@ -512,325 +601,249 @@ fn spawn_district(
         ));
     }
 
-    // Lay out children: subdirectories and files tile the same rectangle.
-    let mut weights: Vec<f32> = Vec::new();
-    for d in &node.dirs {
-        weights.push(dir_weight(d));
-    }
+    // Split files: props scatter on the streets, the rest become buildings.
+    let mut rng = SmallRng::seed_from_u64(seed_for(&node.path));
+    let mut buildings: Vec<&FileEntry> = Vec::new();
+    let mut props: Vec<&FileEntry> = Vec::new();
     for f in &node.files {
-        weights.push(file_weight(f));
-    }
-    if weights.is_empty() {
-        return;
-    }
-    let inner = rect.inset(road_width(depth) * 0.35);
-    let cells = squarify(&weights, inner);
-    let pad = road_width(depth + 1) * 0.5;
-
-    for (i, d) in node.dirs.iter().enumerate() {
-        let cell = cells[i].inset(pad);
-        spawn_district(ctx, d, cell, depth + 1, format!("{display_path}/{}", d.name));
-    }
-    let base = node.dirs.len();
-    for (i, f) in node.files.iter().enumerate() {
-        let cell = cells[base + i].inset(0.5);
-        spawn_file(ctx, f, cell, depth);
-    }
-}
-
-fn spawn_walls(ctx: &mut SpawnCtx, rect: Rect2, top: f32) {
-    let h = 1.1;
-    let t = 0.25;
-    let mn = rect.min;
-    let mx = rect.max();
-    // (start, end, along_x)
-    let sides = [
-        (Vec2::new(mn.x, mn.y), Vec2::new(mx.x, mn.y), true),
-        (Vec2::new(mn.x, mx.y), Vec2::new(mx.x, mx.y), true),
-        (Vec2::new(mn.x, mn.y), Vec2::new(mn.x, mx.y), false),
-        (Vec2::new(mx.x, mn.y), Vec2::new(mx.x, mx.y), false),
-    ];
-    for (a, b, along_x) in sides {
-        let len = a.distance(b);
-        let gate = (len * 0.35).clamp(3.0, 7.0);
-        let seg = (len - gate) * 0.5;
-        if seg < 0.8 {
-            continue;
-        }
-        for k in [0.0, 1.0] {
-            // k=0: segment near `a`; k=1: segment near `b`.
-            let t_center = if k == 0.0 {
-                seg * 0.5
-            } else {
-                len - seg * 0.5
-            };
-            let pos = a + (b - a).normalize() * t_center;
-            let (sx, sz) = if along_x { (seg, t) } else { (t, seg) };
-            ctx.commands.spawn((
-                Mesh3d(ctx.meshes.cube.clone()),
-                MeshMaterial3d(ctx.palette.wall.clone()),
-                Transform::from_xyz(pos.x, top + h * 0.5, pos.y)
-                    .with_scale(Vec3::new(sx, h, sz)),
-                RigidBody::Static,
-                Collider::cuboid(1.0, 1.0, 1.0),
-            ));
+        if f.size < PROP_SIZE_LIMIT {
+            props.push(f);
+        } else {
+            buildings.push(f);
         }
     }
-}
+    buildings.sort_by(|a, b| b.size.cmp(&a.size));
 
-const PROP_SIZE_LIMIT: u64 = 4096;
-
-fn spawn_file(ctx: &mut SpawnCtx, f: &FileEntry, cell: Rect2, depth: usize) {
-    if cell.size.x < 0.9 || cell.size.y < 0.9 {
-        return;
-    }
-    let mut rng = SmallRng::seed_from_u64(seed_for(&f.path));
-    let base_y = slab_top(depth);
-    let center = cell.center();
-    let fp = (cell.size.x.min(cell.size.y) * 0.62).clamp(0.9, 6.5);
-    let height = (1.6 + (f.size as f32 + 1.0).log2() * 0.55).clamp(2.0, 22.0);
-    let file_ref = FileRef {
-        name: f.name.clone(),
-        path: f.path.clone(),
-        size: f.size,
-        kind: f.kind,
+    // Fill the street-facing perimeter row first (biggest files up front).
+    let leftovers = if rect.size.x > 20.0 && rect.size.y > 20.0 {
+        spawn_perimeter_row(ctx, rect, &buildings, &mut rng)
+    } else {
+        buildings.clone()
     };
 
-    // Tiny files become physics props instead of buildings.
-    if f.size < PROP_SIZE_LIMIT {
-        let is_ball = rng.random_bool(0.4);
-        let s = rng.random_range(0.38..0.55);
-        let mut e = ctx.commands.spawn((
-            Transform::from_xyz(center.x, base_y + 1.0, center.y).with_scale(Vec3::splat(s)),
-            MeshMaterial3d(ctx.palette.body[&f.kind].clone()),
-            RigidBody::Dynamic,
-            Mass(2.0),
-            Friction::new(0.7),
-            Restitution::new(0.3),
-            file_ref,
-            Prop,
-        ));
-        if is_ball {
-            e.insert((Mesh3d(ctx.meshes.sphere.clone()), Collider::sphere(0.5)));
-        } else {
-            e.insert((
-                Mesh3d(ctx.meshes.cube.clone()),
-                Collider::cuboid(1.0, 1.0, 1.0),
-            ));
+    // Interior: subdistricts plus leftover-file alley blocks.
+    let inner = rect.inset(if rect.size.x > 20.0 { ROW_DEPTH + 2.2 } else { 1.5 });
+    let blocks: Vec<Vec<&FileEntry>> = leftovers.chunks(8).map(|c| c.to_vec()).collect();
+    let mut weights: Vec<f32> = node.dirs.iter().map(dir_weight).collect();
+    for b in &blocks {
+        weights.push(b.iter().map(|f| file_weight(f)).sum::<f32>() * 1.6 + 6.0);
+    }
+    if !weights.is_empty() && inner.size.x > 6.0 && inner.size.y > 6.0 {
+        let cells = squarify(&weights, inner);
+        let pad = road_width(depth + 1) * 0.5;
+        for (i, d) in node.dirs.iter().enumerate() {
+            let cell = cells[i].inset(pad);
+            spawn_district(ctx, d, cell, depth + 1, format!("{display_path}/{}", d.name));
         }
-        return;
+        for (bi, block) in blocks.iter().enumerate() {
+            let cell = cells[node.dirs.len() + bi].inset(1.2);
+            spawn_alley_block(ctx, block, cell, &mut rng);
+        }
     }
 
-    match f.kind {
-        FileKind::Text | FileKind::Code => {
-            let (w, d) = (fp * 0.62, fp * 0.4);
-            let h = height * 0.9;
-            ctx.commands
-                .spawn((
-                    Mesh3d(ctx.meshes.cube.clone()),
-                    MeshMaterial3d(ctx.palette.body[&f.kind].clone()),
-                    Transform::from_xyz(center.x, base_y + h * 0.5, center.y)
-                        .with_scale(Vec3::new(w, h, d)),
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 1.0, 1.0),
-                    file_ref.clone(),
-                ))
-                .with_children(|parent| {
-                    // Scrolling text panel; note children inherit parent scale,
-                    // so sizes here are in parent-local (scaled) space.
-                    parent.spawn((
-                        Mesh3d(ctx.meshes.quad.clone()),
-                        MeshMaterial3d(ctx.palette.screen_off.clone()),
-                        Transform::from_xyz(0.0, 0.02, 0.5 + 0.02 / d)
-                            .with_scale(Vec3::new(0.82, 0.88, 1.0)),
-                        TextScreen {
-                            path: f.path.clone(),
-                            kind: f.kind,
-                        },
-                        NotShadowCaster,
-                    ));
-                });
+    // Street props (vending machines, crates, balls) along the south edge.
+    let mut px = rect.min.x + 3.0;
+    for f in props {
+        if px > rect.max().x - 3.0 {
+            break;
         }
-        FileKind::Image => {
-            let (w, h, d) = (fp * 1.0, (height * 0.62).clamp(2.0, 9.0), fp * 0.55);
-            ctx.commands
-                .spawn((
-                    Mesh3d(ctx.meshes.cube.clone()),
-                    MeshMaterial3d(ctx.palette.body[&f.kind].clone()),
-                    Transform::from_xyz(center.x, base_y + h * 0.5, center.y)
-                        .with_scale(Vec3::new(w, h, d)),
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 1.0, 1.0),
-                    file_ref.clone(),
-                ))
-                .with_children(|parent| {
-                    parent.spawn((
-                        Mesh3d(ctx.meshes.quad.clone()),
-                        MeshMaterial3d(ctx.palette.screen_off.clone()),
-                        Transform::from_xyz(0.0, 0.06, 0.5 + 0.02 / d)
-                            .with_scale(Vec3::new(0.86, 0.72, 1.0)),
-                        ImageScreen {
-                            path: f.path.clone(),
-                            base_size: Vec2::new(w * 0.86, h * 0.72),
-                        },
-                        NotShadowCaster,
-                    ));
-                });
+        spawn_prop(ctx, f, Vec2::new(px, rect.max().y - 1.3), SLAB_TOP);
+        px += 2.2 + (seed_for(&f.path) % 30) as f32 * 0.1;
+    }
+}
+
+fn spawn_sidewalk_ring(ctx: &mut SpawnCtx, rect: Rect2) {
+    let w = 1.3;
+    let y = SLAB_TOP + 0.006;
+    let c = rect.center();
+    let strips = [
+        // (center, scale)
+        (
+            Vec2::new(c.x, rect.min.y + w * 0.5),
+            Vec2::new(rect.size.x, w),
+        ),
+        (
+            Vec2::new(c.x, rect.max().y - w * 0.5),
+            Vec2::new(rect.size.x, w),
+        ),
+        (
+            Vec2::new(rect.min.x + w * 0.5, c.y),
+            Vec2::new(w, rect.size.y - w * 2.0),
+        ),
+        (
+            Vec2::new(rect.max().x - w * 0.5, c.y),
+            Vec2::new(w, rect.size.y - w * 2.0),
+        ),
+    ];
+    for (pos, scale) in strips {
+        ctx.commands.spawn((
+            Mesh3d(ctx.meshes.quad.clone()),
+            MeshMaterial3d(ctx.palette.sidewalk.clone()),
+            Transform::from_xyz(pos.x, y, pos.y)
+                .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                .with_scale(Vec3::new(scale.x, scale.y, 1.0)),
+            NotShadowCaster,
+        ));
+    }
+}
+
+/// Packs buildings shoulder-to-shoulder along the district edge, facing the
+/// street outside. Leaves alley gaps for walking in. Returns unplaced files.
+fn spawn_perimeter_row<'f>(
+    ctx: &mut SpawnCtx,
+    rect: Rect2,
+    files: &[&'f FileEntry],
+    rng: &mut SmallRng,
+) -> Vec<&'f FileEntry> {
+    let corner = 3.2;
+    let mn = rect.min;
+    let mx = rect.max();
+    // (start, along, outward normal, length): south, north, west, east.
+    let sides = [
+        (
+            Vec2::new(mn.x + corner, mx.y),
+            Vec2::new(1.0, 0.0),
+            Vec2::new(0.0, 1.0),
+            rect.size.x - corner * 2.0,
+        ),
+        (
+            Vec2::new(mx.x - corner, mn.y),
+            Vec2::new(-1.0, 0.0),
+            Vec2::new(0.0, -1.0),
+            rect.size.x - corner * 2.0,
+        ),
+        (
+            Vec2::new(mn.x, mn.y + corner),
+            Vec2::new(0.0, 1.0),
+            Vec2::new(-1.0, 0.0),
+            rect.size.y - corner * 2.0,
+        ),
+        (
+            Vec2::new(mx.x, mx.y - corner),
+            Vec2::new(0.0, -1.0),
+            Vec2::new(1.0, 0.0),
+            rect.size.y - corner * 2.0,
+        ),
+    ];
+
+    let mut queue = files.iter().copied().collect::<std::collections::VecDeque<_>>();
+    for (start, along, out, length) in sides {
+        if queue.is_empty() {
+            break;
         }
-        FileKind::Audio => {
-            let r = (fp * 0.44).clamp(0.5, 1.6);
-            ctx.commands
-                .spawn((
-                    Mesh3d(ctx.meshes.cylinder.clone()),
-                    MeshMaterial3d(ctx.palette.body[&f.kind].clone()),
-                    Transform::from_xyz(center.x, base_y + 0.45, center.y)
-                        .with_scale(Vec3::new(r * 2.0, 0.9, r * 2.0)),
-                    RigidBody::Static,
-                    Collider::cylinder(0.5, 1.0),
-                    file_ref.clone(),
-                ))
-                .with_children(|parent| {
-                    // Floating orb: local space is scaled, so apply the inverse
-                    // of the parent scale to get a uniform world-space sphere.
-                    let orb_d = (r * 1.1).clamp(0.7, 1.4);
-                    let local_y = 1.7 / 0.9;
-                    parent.spawn((
-                        Mesh3d(ctx.meshes.sphere.clone()),
-                        MeshMaterial3d(ctx.palette.orb.clone()),
-                        Transform::from_xyz(0.0, local_y, 0.0).with_scale(Vec3::new(
-                            orb_d / (r * 2.0),
-                            orb_d / 0.9,
-                            orb_d / (r * 2.0),
-                        )),
-                        NotShadowCaster,
-                        Bobber {
-                            base_y: local_y,
-                            phase: center.x * 0.7 + center.y * 0.3,
-                            amp: 0.25 / 0.9,
-                        },
-                    ));
-                });
+        let mut cursor = 0.0;
+        let mut since_gap = 0.0;
+        while let Some(f) = queue.front() {
+            let frng_seed = seed_for(&f.path);
+            let mut frng = SmallRng::seed_from_u64(frng_seed);
+            let w = (2.4 + frng.random_range(0.0..2.0) + (f.size as f32).log2() * 0.12)
+                .clamp(2.4, 7.0);
+            if cursor + w > length {
+                break;
+            }
+            // Periodic alley gap into the district interior.
+            if since_gap > 20.0 {
+                let gap = 2.6;
+                let gate = start + along * (cursor + gap * 0.5);
+                ctx.gates.0.push(Vec3::new(gate.x, SLAB_TOP, gate.y));
+                cursor += gap;
+                since_gap = 0.0;
+                if cursor + w > length {
+                    break;
+                }
+            }
+            let f = queue.pop_front().unwrap();
+            let setback = frng.random_range(0.0..0.9);
+            let bdepth = ROW_DEPTH - 1.0 - frng.random_range(0.0..0.8);
+            // Building center: pulled inward from the street edge.
+            let along_pos = start + along * (cursor + w * 0.5);
+            let center = along_pos - out * (setback + bdepth * 0.5 + 0.2);
+            // Local +Z must point along `out` (toward the street).
+            let yaw = out.x.atan2(out.y);
+            spawn_building(
+                ctx,
+                f,
+                Vec3::new(center.x, SLAB_TOP, center.y),
+                w,
+                bdepth,
+                yaw,
+                &mut frng,
+            );
+            ctx.building_count += 1;
+            let gap = if rng.random_bool(0.55) {
+                0.0
+            } else {
+                rng.random_range(0.25..0.9)
+            };
+            cursor += w + gap;
+            since_gap += w + gap;
         }
-        FileKind::Video => {
-            let (w, h, d) = (fp * 1.05, (height * 0.55).clamp(2.2, 8.0), fp * 0.6);
-            ctx.commands
-                .spawn((
-                    Mesh3d(ctx.meshes.cube.clone()),
-                    MeshMaterial3d(ctx.palette.body[&f.kind].clone()),
-                    Transform::from_xyz(center.x, base_y + h * 0.5, center.y)
-                        .with_scale(Vec3::new(w, h, d)),
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 1.0, 1.0),
-                    file_ref.clone(),
-                ))
-                .with_children(|parent| {
-                    parent.spawn((
-                        Mesh3d(ctx.meshes.quad.clone()),
-                        MeshMaterial3d(ctx.palette.screen_off.clone()),
-                        Transform::from_xyz(0.0, 0.05, 0.5 + 0.02 / d)
-                            .with_scale(Vec3::new(0.88, 0.6, 1.0)),
-                        NotShadowCaster,
-                    ));
-                    // Glowing marquee bar on top.
-                    parent.spawn((
-                        Mesh3d(ctx.meshes.cube.clone()),
-                        MeshMaterial3d(ctx.palette.marquee.clone()),
-                        Transform::from_xyz(0.0, 0.5 + 0.09 / h, 0.0)
-                            .with_scale(Vec3::new(1.06, 0.18 / h, 1.1)),
-                        NotShadowCaster,
-                    ));
-                });
+    }
+    queue.into_iter().collect()
+}
+
+/// Leftover files form a dense row (or two back-to-back) inside a cell,
+/// making narrow back alleys.
+fn spawn_alley_block(ctx: &mut SpawnCtx, files: &[&FileEntry], cell: Rect2, rng: &mut SmallRng) {
+    if cell.size.x < 4.0 || cell.size.y < 4.0 {
+        return;
+    }
+    let horizontal = cell.size.x >= cell.size.y;
+    let length = if horizontal { cell.size.x } else { cell.size.y };
+    let depth_avail = if horizontal { cell.size.y } else { cell.size.x };
+    let two_rows = depth_avail > ROW_DEPTH * 2.0 + 1.0;
+    let c = cell.center();
+
+    let rows: Vec<(Vec2, Vec2, Vec2)> = if two_rows {
+        let off = depth_avail * 0.25;
+        if horizontal {
+            vec![
+                (Vec2::new(cell.min.x, c.y - off), Vec2::X, Vec2::new(0.0, -1.0)),
+                (Vec2::new(cell.min.x, c.y + off), Vec2::X, Vec2::new(0.0, 1.0)),
+            ]
+        } else {
+            vec![
+                (Vec2::new(c.x - off, cell.min.y), Vec2::Y, Vec2::new(-1.0, 0.0)),
+                (Vec2::new(c.x + off, cell.min.y), Vec2::Y, Vec2::new(1.0, 0.0)),
+            ]
         }
-        FileKind::Archive => {
-            let (w, h, d) = (fp * 0.8, (fp * 0.5).clamp(0.8, 2.2), fp * 0.55);
-            ctx.commands
-                .spawn((
-                    Mesh3d(ctx.meshes.cube.clone()),
-                    MeshMaterial3d(ctx.palette.body[&f.kind].clone()),
-                    Transform::from_xyz(center.x, base_y + h * 0.5, center.y)
-                        .with_scale(Vec3::new(w, h, d)),
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 1.0, 1.0),
-                    file_ref.clone(),
-                ))
-                .with_children(|parent| {
-                    // Lid.
-                    parent.spawn((
-                        Mesh3d(ctx.meshes.cube.clone()),
-                        MeshMaterial3d(ctx.palette.chest_trim.clone()),
-                        Transform::from_xyz(0.0, 0.5, 0.0).with_scale(Vec3::new(1.06, 0.16, 1.08)),
-                    ));
-                    // Latch.
-                    parent.spawn((
-                        Mesh3d(ctx.meshes.cube.clone()),
-                        MeshMaterial3d(ctx.palette.chest_trim.clone()),
-                        Transform::from_xyz(0.0, 0.15, 0.5).with_scale(Vec3::new(0.14, 0.2, 0.08)),
-                    ));
-                });
-        }
-        FileKind::Executable => {
-            let s = (fp * 0.5).clamp(0.7, 1.8);
-            let body_h = s * 1.1;
-            let body_y = base_y + s * 0.5 + body_h * 0.5;
-            ctx.commands
-                .spawn((
-                    Mesh3d(ctx.meshes.cube.clone()),
-                    MeshMaterial3d(ctx.palette.body[&f.kind].clone()),
-                    Transform::from_xyz(center.x, body_y, center.y)
-                        .with_scale(Vec3::new(s, body_h, s * 0.7)),
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 1.9, 1.0),
-                    file_ref.clone(),
-                ))
-                .with_children(|parent| {
-                    // Head.
-                    parent.spawn((
-                        Mesh3d(ctx.meshes.cube.clone()),
-                        MeshMaterial3d(ctx.palette.body[&f.kind].clone()),
-                        Transform::from_xyz(0.0, 0.5 + 0.36, 0.0)
-                            .with_scale(Vec3::new(0.62, 0.55, 0.9)),
-                    ));
-                    // Eyes.
-                    for ex in [-0.14, 0.14] {
-                        parent.spawn((
-                            Mesh3d(ctx.meshes.cube.clone()),
-                            MeshMaterial3d(ctx.palette.eye.clone()),
-                            Transform::from_xyz(ex, 0.5 + 0.4, 0.34)
-                                .with_scale(Vec3::new(0.1, 0.1, 0.06)),
-                            NotShadowCaster,
-                        ));
-                    }
-                    // Legs.
-                    for ex in [-0.28, 0.28] {
-                        parent.spawn((
-                            Mesh3d(ctx.meshes.cube.clone()),
-                            MeshMaterial3d(ctx.palette.roof.clone()),
-                            Transform::from_xyz(ex, -0.5 - 0.2, 0.0)
-                                .with_scale(Vec3::new(0.2, 0.45, 0.5)),
-                        ));
-                    }
-                });
-        }
-        FileKind::Data | FileKind::Other => {
-            let (w, d) = (fp * 0.85, fp * 0.7);
-            ctx.commands
-                .spawn((
-                    Mesh3d(ctx.meshes.cube.clone()),
-                    MeshMaterial3d(ctx.palette.body[&f.kind].clone()),
-                    Transform::from_xyz(center.x, base_y + height * 0.5, center.y)
-                        .with_scale(Vec3::new(w, height, d)),
-                    RigidBody::Static,
-                    Collider::cuboid(1.0, 1.0, 1.0),
-                    file_ref.clone(),
-                ))
-                .with_children(|parent| {
-                    parent.spawn((
-                        Mesh3d(ctx.meshes.cube.clone()),
-                        MeshMaterial3d(ctx.palette.roof.clone()),
-                        Transform::from_xyz(0.0, 0.5 + 0.06 / height, 0.0)
-                            .with_scale(Vec3::new(1.05, 0.12 / height, 1.05)),
-                    ));
-                });
+    } else if horizontal {
+        vec![(Vec2::new(cell.min.x, c.y), Vec2::X, Vec2::new(0.0, 1.0))]
+    } else {
+        vec![(Vec2::new(c.x, cell.min.y), Vec2::Y, Vec2::new(1.0, 0.0))]
+    };
+
+    let mut queue = files.iter().copied().collect::<std::collections::VecDeque<_>>();
+    for (row_origin, along, mut out) in rows {
+        let mut cursor = 1.0;
+        while let Some(f) = queue.front() {
+            let mut frng = SmallRng::seed_from_u64(seed_for(&f.path));
+            let w = (2.2 + frng.random_range(0.0..1.8) + (f.size as f32).log2() * 0.1)
+                .clamp(2.2, 6.0);
+            if cursor + w > length - 1.0 {
+                break;
+            }
+            let f = queue.pop_front().unwrap();
+            // Single rows: buildings face random directions for variety.
+            if !two_rows && rng.random_bool(0.5) {
+                out = -out;
+            }
+            let bdepth = (depth_avail * if two_rows { 0.42 } else { 0.7 })
+                .clamp(2.5, ROW_DEPTH)
+                - frng.random_range(0.0..0.5);
+            let center = row_origin + along * (cursor + w * 0.5);
+            let yaw = out.x.atan2(out.y);
+            spawn_building(
+                ctx,
+                f,
+                Vec3::new(center.x, SLAB_TOP, center.y),
+                w,
+                bdepth,
+                yaw,
+                &mut frng,
+            );
+            ctx.building_count += 1;
+            cursor += w + rng.random_range(0.0..0.6);
         }
     }
 }

@@ -1,3 +1,4 @@
+mod buildings;
 mod citygen;
 mod filereps;
 mod interact;
