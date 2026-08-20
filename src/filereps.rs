@@ -20,7 +20,7 @@ use bevy::sprite::Anchor;
 use bevy::tasks::{block_on, poll_once, AsyncComputeTaskPool, Task};
 use bevy::text::TextBounds;
 
-use crate::citygen::{Bobber, ImageScreen, Palette, SignText, TextScreen};
+use crate::citygen::{Bobber, ImageScreen, NeonNameSign, Palette, SignText, TextScreen, NEON_COLORS};
 use crate::interact::{Inspector, InspectorContent, PlayAudio};
 use crate::player::Player;
 use crate::scan::FileKind;
@@ -29,8 +29,10 @@ use crate::AppState;
 const RTT_LAYER: usize = 31;
 const TEXT_SCREEN_BUDGET: usize = 20;
 const IMAGE_SCREEN_BUDGET: usize = 30;
+const NEON_SIGN_BUDGET: usize = 26;
 const SCREEN_ACTIVATE_DIST: f32 = 50.0;
 const SIGN_ACTIVATE_DIST: f32 = 140.0;
+const NEON_ACTIVATE_DIST: f32 = 48.0;
 const SCREEN_DEACTIVATE_DIST: f32 = 65.0;
 const MAX_AUDIO_BYTES: u64 = 40 * 1024 * 1024;
 
@@ -58,7 +60,7 @@ impl Plugin for FileRepsPlugin {
                     handle_play_audio,
                     poll_audio_task,
                     animate_bobbers,
-                    pulse_orbs,
+                    pulse_emissives,
                 )
                     .run_if(in_state(AppState::Playing)),
             );
@@ -74,6 +76,16 @@ impl Plugin for FileRepsPlugin {
 struct ScreenBudget {
     text: usize,
     images: usize,
+    neon: usize,
+}
+
+/// Which budget counter a live screen belongs to.
+#[derive(Clone, Copy, PartialEq)]
+enum BudgetKind {
+    Text,
+    Image,
+    Neon,
+    Sign,
 }
 
 /// Decoded image textures by file path, reused by the inspector overlay.
@@ -88,12 +100,14 @@ pub struct RequestImage(pub PathBuf);
 #[derive(Component)]
 struct PendingScreen;
 
-/// A panel that received its texture. Holds the handles so they can be freed.
+/// A panel that received its texture. Holds the handles so they can be freed
+/// and the material to restore when the screen turns off again.
 #[derive(Component)]
 struct ScreenReady {
     image: Handle<Image>,
     material: Handle<StandardMaterial>,
-    is_text: bool,
+    off_material: Handle<StandardMaterial>,
+    budget: BudgetKind,
 }
 
 /// UV-scroll animation for text marquees; the f32 is a per-screen phase.
@@ -114,7 +128,6 @@ struct ScreenFailed;
 // ---------------------------------------------------------------------------
 
 struct RttJob {
-    /// Panel to apply the finished texture to; `None` renders nothing (unused).
     target: Entity,
     text: String,
     width: u32,
@@ -122,9 +135,15 @@ struct RttJob {
     font_size: f32,
     fg: Color,
     bg: Color,
-    /// Marquee screens scroll and glow harder; signs are static.
+    /// Marquee screens get a UV-scroll animation.
     scroll: bool,
+    /// Rotate the text 90° for vertical banner signs.
+    vertical: bool,
     double_sided: bool,
+    emissive: f32,
+    /// Material to restore when the screen deactivates.
+    off_material: Handle<StandardMaterial>,
+    budget: BudgetKind,
 }
 
 #[derive(Resource, Default)]
@@ -170,6 +189,11 @@ fn activate_screens(
         (Entity, &GlobalTransform, &SignText),
         (Without<PendingScreen>, Without<ScreenReady>, Without<ScreenFailed>),
     >,
+    neon_signs: Query<
+        (Entity, &GlobalTransform, &NeonNameSign),
+        (Without<PendingScreen>, Without<ScreenReady>, Without<ScreenFailed>),
+    >,
+    palette: Option<Res<Palette>>,
     mut budget: ResMut<ScreenBudget>,
     mut queue: ResMut<RttQueue>,
     mut tasks: ResMut<ImageTasks>,
@@ -181,6 +205,7 @@ fn activate_screens(
         return;
     }
     *last_run = time.elapsed_secs();
+    let Some(palette) = palette else { return };
     let Ok(player_pos) = player.single().map(|t| t.translation) else {
         return;
     };
@@ -199,9 +224,50 @@ fn activate_screens(
             fg: Color::srgb(0.92, 0.96, 1.0),
             bg: Color::srgb(0.075, 0.09, 0.14),
             scroll: false,
+            vertical: false,
             double_sided: true,
+            emissive: 1.25,
+            off_material: palette.sign_bg.clone(),
+            budget: BudgetKind::Sign,
         });
         commands.entity(entity).insert(PendingScreen);
+    }
+
+    // Vertical neon name signs: nearest first, bounded count.
+    if budget.neon < NEON_SIGN_BUDGET {
+        let mut candidates: Vec<_> = neon_signs
+            .iter()
+            .map(|(e, t, s)| (t.translation().distance(player_pos), e, s))
+            .filter(|(d, ..)| *d < NEON_ACTIVATE_DIST)
+            .collect();
+        candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, entity, sign) in candidates
+            .into_iter()
+            .take(NEON_SIGN_BUDGET - budget.neon)
+        {
+            let mut name = sign.name.to_uppercase();
+            if name.chars().count() > 13 {
+                name = name.chars().take(12).collect::<String>() + "…";
+            }
+            let hue = (sign.hue_seed % 6) as usize;
+            queue.0.push_back(RttJob {
+                target: entity,
+                text: name,
+                width: 128,
+                height: 512,
+                font_size: 56.0,
+                fg: NEON_COLORS[hue],
+                bg: Color::srgb(0.02, 0.02, 0.045),
+                scroll: false,
+                vertical: true,
+                double_sided: true,
+                emissive: 3.2,
+                off_material: palette.neon[hue].clone(),
+                budget: BudgetKind::Neon,
+            });
+            commands.entity(entity).insert(PendingScreen);
+            budget.neon += 1;
+        }
     }
 
     // Text marquees: nearest first, bounded count.
@@ -234,7 +300,11 @@ fn activate_screens(
                 fg,
                 bg: Color::srgb(0.015, 0.03, 0.05),
                 scroll: true,
+                vertical: false,
                 double_sided: false,
+                emissive: 1.7,
+                off_material: palette.screen_off.clone(),
+                budget: BudgetKind::Text,
             });
             commands.entity(entity).insert(PendingScreen);
             budget.text += 1;
@@ -272,7 +342,7 @@ fn process_rtt_queue(
     mut active: ResMut<RttActive>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    panels: Query<(), Or<(With<TextScreen>, With<SignText>)>>,
+    panels: Query<(), Or<(With<TextScreen>, With<SignText>, With<NeonNameSign>)>>,
 ) {
     // Advance the in-flight job.
     if let Some(rtt) = active.0.as_mut() {
@@ -286,10 +356,9 @@ fn process_rtt_queue(
 
         // The panel might have been despawned meanwhile.
         if panels.get(rtt.job.target).is_ok() {
-            let emissive = if rtt.job.scroll { 1.7 } else { 1.25 };
             let material = materials.add(StandardMaterial {
                 base_color: Color::srgb(0.02, 0.02, 0.03),
-                emissive: LinearRgba::WHITE * emissive,
+                emissive: LinearRgba::WHITE * rtt.job.emissive,
                 emissive_texture: Some(rtt.image.clone()),
                 perceptual_roughness: 0.35,
                 cull_mode: if rtt.job.double_sided {
@@ -306,7 +375,8 @@ fn process_rtt_queue(
                 ScreenReady {
                     image: rtt.image,
                     material,
-                    is_text: rtt.job.scroll,
+                    off_material: rtt.job.off_material.clone(),
+                    budget: rtt.job.budget,
                 },
             ));
             e.remove::<PendingScreen>();
@@ -357,7 +427,8 @@ fn process_rtt_queue(
         ))
         .id();
     // Marquees hang top-anchored so long content scrolls up through the
-    // panel; signs are centered on both axes.
+    // panel; signs are centered; vertical banners rotate the text 90° so it
+    // reads top-to-bottom.
     let (anchor, position, justify) = if job.scroll {
         (
             Anchor(Vec2::new(0.0, 0.5)),
@@ -367,6 +438,15 @@ fn process_rtt_queue(
     } else {
         (Anchor(Vec2::ZERO), Vec3::ZERO, Justify::Center)
     };
+    let bounds_width = if job.vertical {
+        job.height as f32 - 24.0
+    } else {
+        job.width as f32 - 18.0
+    };
+    let mut text_transform = Transform::from_translation(position);
+    if job.vertical {
+        text_transform.rotation = Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2);
+    }
     let text_entity = commands
         .spawn((
             Text2d::new(job.text.clone()),
@@ -377,11 +457,11 @@ fn process_rtt_queue(
                 ..default()
             },
             TextBounds {
-                width: Some(job.width as f32 - 18.0),
+                width: Some(bounds_width),
                 height: None,
             },
             anchor,
-            Transform::from_translation(position),
+            text_transform,
             RenderLayers::layer(RTT_LAYER),
         ))
         .id();
@@ -413,7 +493,6 @@ fn deactivate_far_screens(
     mut commands: Commands,
     player: Query<&Transform, With<Player>>,
     screens: Query<(Entity, &GlobalTransform, &ScreenReady), Without<SignText>>,
-    palette: Option<Res<Palette>>,
     inspector: Res<Inspector>,
     image_screens: Query<&ImageScreen>,
     mut budget: ResMut<ScreenBudget>,
@@ -421,7 +500,6 @@ fn deactivate_far_screens(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut cache: ResMut<ImageCache>,
 ) {
-    let Some(palette) = palette else { return };
     let Ok(player_pos) = player.single().map(|t| t.translation) else {
         return;
     };
@@ -442,14 +520,15 @@ fn deactivate_far_screens(
         }
         commands
             .entity(entity)
-            .insert(MeshMaterial3d(palette.screen_off.clone()))
+            .insert(MeshMaterial3d(ready.off_material.clone()))
             .remove::<(ScreenReady, ScrollText, PendingScreen)>();
         images.remove(&ready.image);
         materials.remove(&ready.material);
-        if ready.is_text {
-            budget.text = budget.text.saturating_sub(1);
-        } else {
-            budget.images = budget.images.saturating_sub(1);
+        match ready.budget {
+            BudgetKind::Text => budget.text = budget.text.saturating_sub(1),
+            BudgetKind::Image => budget.images = budget.images.saturating_sub(1),
+            BudgetKind::Neon => budget.neon = budget.neon.saturating_sub(1),
+            BudgetKind::Sign => {}
         }
     }
 }
@@ -501,8 +580,10 @@ fn poll_image_tasks(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut cache: ResMut<ImageCache>,
     mut budget: ResMut<ScreenBudget>,
+    palette: Option<Res<Palette>>,
     mut panels: Query<(&ImageScreen, &mut Transform, Has<Fitted>)>,
 ) {
+    let Some(palette) = palette else { return };
     let mut finished = Vec::new();
     for (i, (_, _, task)) in tasks.0.iter_mut().enumerate() {
         if let Some(result) = block_on(poll_once(task)) {
@@ -563,7 +644,8 @@ fn poll_image_tasks(
                 ScreenReady {
                     image: image_handle,
                     material,
-                    is_text: false,
+                    off_material: palette.screen_off.clone(),
+                    budget: BudgetKind::Image,
                 },
             ))
             .remove::<PendingScreen>();
@@ -647,14 +729,32 @@ fn animate_bobbers(mut query: Query<(&mut Transform, &Bobber)>, time: Res<Time>)
     }
 }
 
-fn pulse_orbs(
+/// Drives every animated shared material: pulsing audio orbs, blinking
+/// rooftop beacons and erratically flickering neon.
+fn pulse_emissives(
     palette: Option<Res<Palette>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     time: Res<Time>,
 ) {
     let Some(palette) = palette else { return };
+    let t = time.elapsed_secs();
     if let Some(mut mat) = materials.get_mut(&palette.orb) {
-        let pulse = 1.15 + 0.55 * (time.elapsed_secs() * 2.3).sin();
+        let pulse = 1.15 + 0.55 * (t * 2.3).sin();
         mat.emissive = LinearRgba::rgb(1.8, 0.6, 2.4) * pulse;
+    }
+    if let Some(mut mat) = materials.get_mut(&palette.beacon) {
+        // Slow aviation-style double blink.
+        let phase = (t * 0.9).fract();
+        let on = phase < 0.12 || (0.2..0.32).contains(&phase);
+        let level = if on { 1.0 } else { 0.12 };
+        mat.emissive = LinearRgba::rgb(4.0, 0.2, 0.2) * level;
+    }
+    if let Some(mut mat) = materials.get_mut(&palette.neon_flicker) {
+        // Hash consecutive time steps into an erratic on/off pattern.
+        let step = (t * 16.0) as u32;
+        let noise = step.wrapping_mul(2654435761) >> 8;
+        let on = noise % 100 < 82;
+        let level = if on { 5.0 } else { 0.25 };
+        mat.emissive = LinearRgba::from(Color::srgb(1.0, 0.25, 0.45)) * level;
     }
 }

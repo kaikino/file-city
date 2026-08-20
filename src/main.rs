@@ -165,8 +165,10 @@ fn debug_screenshot(
                     .total_cmp(&b.distance_squared(player_pos))
             })
             .unwrap_or(player_pos + Vec3::new(0.0, 0.0, -20.0));
-        let transform = Transform::from_translation(sign_pos + Vec3::new(-6.0, 7.0, 26.0))
-            .looking_at(sign_pos + Vec3::new(0.0, -1.0, -12.0), Vec3::Y);
+        // Street-level view down the road the sign hangs over, so facades,
+        // neon and screens line both sides of the frame.
+        let transform = Transform::from_translation(sign_pos + Vec3::new(17.0, -1.6, 1.5))
+            .looking_at(sign_pos + Vec3::new(-30.0, -2.4, 0.5), Vec3::Y);
         commands.spawn((
             Camera3d::default(),
             Hdr,
