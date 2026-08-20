@@ -6,6 +6,7 @@ mod interact;
 mod player;
 mod scan;
 mod ui;
+mod viewers;
 
 use avian3d::prelude::*;
 use bevy::prelude::*;

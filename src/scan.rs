@@ -39,7 +39,7 @@ impl FileKind {
 }
 
 const IMAGE_EXT: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif", "ico", "heic",
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif", "ico", "svg",
 ];
 const TEXT_EXT: &[&str] = &[
     "txt", "md", "markdown", "rst", "log", "tex", "org", "csv", "tsv", "rtf",
@@ -49,7 +49,7 @@ const CODE_EXT: &[&str] = &[
     "go", "rb", "php", "cs", "sh", "zsh", "bash", "fish", "lua", "vim", "el", "clj", "ex", "exs",
     "erl", "hs", "ml", "scala", "sql", "html", "css", "scss", "sass", "less", "vue", "svelte",
     "json", "yaml", "yml", "toml", "xml", "ini", "cfg", "conf", "make", "cmake", "dockerfile",
-    "gradle", "proto", "graphql", "zig", "nim", "dart", "r", "jl", "asm", "s",
+    "gradle", "proto", "graphql", "zig", "nim", "dart", "r", "jl", "asm", "s", "plist",
 ];
 const AUDIO_EXT: &[&str] = &["mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "aiff", "aif"];
 const VIDEO_EXT: &[&str] = &["mp4", "mov", "mkv", "avi", "webm", "m4v", "flv", "wmv", "mpg"];
@@ -60,8 +60,8 @@ const ARCHIVE_EXT: &[&str] = &[
 const EXEC_EXT: &[&str] = &["app", "exe", "bin", "dylib", "so", "dll", "wasm", "o", "a"];
 const DATA_EXT: &[&str] = &[
     "db", "sqlite", "sqlite3", "parquet", "arrow", "pdf", "doc", "docx", "xls", "xlsx", "ppt",
-    "pptx", "key", "pages", "numbers", "epub", "plist", "dat", "pickle", "pkl", "npy", "npz",
-    "onnx", "pt", "pth", "gguf", "safetensors",
+    "pptx", "key", "pages", "numbers", "epub", "dat", "pickle", "pkl", "npy", "npz",
+    "onnx", "pt", "pth", "gguf", "safetensors", "ttf", "otf", "woff", "woff2", "heic", "heif",
 ];
 
 /// Special file names (no useful extension) that are really text/code.

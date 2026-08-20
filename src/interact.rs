@@ -74,6 +74,7 @@ pub enum InspectorContent {
         body: String,
         meta: String,
         path: PathBuf,
+        wrap: bool,
     },
     Image {
         title: String,
@@ -85,6 +86,13 @@ pub enum InspectorContent {
         lines: Vec<String>,
         path: PathBuf,
     },
+    /// Live preview rendered with the file's own typeface.
+    Font {
+        title: String,
+        meta: String,
+        path: PathBuf,
+        font: Handle<Font>,
+    },
 }
 
 impl InspectorContent {
@@ -93,7 +101,8 @@ impl InspectorContent {
         match self {
             InspectorContent::Text { path, .. }
             | InspectorContent::Image { path, .. }
-            | InspectorContent::Info { path, .. } => path,
+            | InspectorContent::Info { path, .. }
+            | InspectorContent::Font { path, .. } => path,
         }
     }
 }
@@ -228,6 +237,7 @@ fn interact_keys(
     mut inspector: ResMut<Inspector>,
     mut grab: ResMut<CursorGrabbed>,
     mut play_audio: MessageWriter<PlayAudio>,
+    mut fonts: ResMut<Assets<Font>>,
     mut props: Query<&mut GravityScale, With<Prop>>,
 ) {
     // E: open/close the inspector (or toggle audio).
@@ -237,70 +247,14 @@ fn interact_keys(
             grab.0 = true;
         } else if let Some(info) = hovered.0.as_ref().filter(|h| h.distance <= USE_RANGE) {
             let f = &info.file;
-            let meta = format!(
-                "{} · {}",
-                f.kind.label(),
-                crate::scan::human_size(f.size)
-            );
-            match f.kind {
-                FileKind::Text | FileKind::Code => {
-                    let body = read_text_preview(&f.path, 60 * 1024);
-                    inspector.0 = Some(InspectorContent::Text {
-                        title: f.name.clone(),
-                        body,
-                        meta: format!("{meta} · {}", f.path.display()),
-                        path: f.path.clone(),
-                    });
-                    grab.0 = false;
-                }
-                FileKind::Image => {
-                    inspector.0 = Some(InspectorContent::Image {
-                        title: f.name.clone(),
-                        path: f.path.clone(),
-                        meta: format!("{meta} · {}", f.path.display()),
-                    });
-                    grab.0 = false;
-                }
-                FileKind::Audio => {
-                    play_audio.write(PlayAudio {
-                        path: f.path.clone(),
-                        name: f.name.clone(),
-                    });
-                }
-                FileKind::Archive => {
-                    inspector.0 = Some(InspectorContent::Text {
-                        title: format!("{} — contents", f.name),
-                        body: archive_listing(&f.path),
-                        meta: format!("{meta} · {}", f.path.display()),
-                        path: f.path.clone(),
-                    });
-                    grab.0 = false;
-                }
-                FileKind::Video => {
-                    inspector.0 = Some(InspectorContent::Info {
-                        title: f.name.clone(),
-                        lines: vec![
-                            format!("Kind:  {}", f.kind.label()),
-                            format!("Size:  {}", crate::scan::human_size(f.size)),
-                            format!("Path:  {}", f.path.display()),
-                            String::new(),
-                            "Video decoding is not supported in-game.".into(),
-                            "Press R to reveal it in Finder.".into(),
-                        ],
-                        path: f.path.clone(),
-                    });
-                    grab.0 = false;
-                }
-                FileKind::Executable | FileKind::Data | FileKind::Other => {
-                    inspector.0 = Some(InspectorContent::Text {
-                        title: format!("{} — hex", f.name),
-                        body: hex_dump(&f.path, 4096, f.size),
-                        meta: format!("{meta} · {}", f.path.display()),
-                        path: f.path.clone(),
-                    });
-                    grab.0 = false;
-                }
+            if f.kind == FileKind::Audio {
+                play_audio.write(PlayAudio {
+                    path: f.path.clone(),
+                    name: f.name.clone(),
+                });
             }
+            inspector.0 = Some(build_inspector_content(f, &mut fonts));
+            grab.0 = false;
         }
     }
 
@@ -345,21 +299,134 @@ fn interact_keys(
     }
 }
 
-fn read_text_preview(path: &std::path::Path, max_bytes: usize) -> String {
-    use std::io::Read;
-    let Ok(file) = std::fs::File::open(path) else {
-        return "<could not read file>".into();
+/// Chooses the richest in-game viewer for a file: extension-specific
+/// handlers first (tables, pretty JSON, PDFs, fonts, gzip text), then a
+/// kind-based fallback (reader, image viewer, archive listing, hex dump).
+fn build_inspector_content(f: &FileRef, fonts: &mut Assets<Font>) -> InspectorContent {
+    use crate::viewers;
+
+    let meta = format!(
+        "{} · {} · {}",
+        f.kind.label(),
+        crate::scan::human_size(f.size),
+        f.path.display()
+    );
+    let ext = f
+        .path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let is_tarball = f.name.to_lowercase().ends_with(".tar.gz");
+
+    let text = |title: String, body: String, wrap: bool| InspectorContent::Text {
+        title,
+        body,
+        meta: meta.clone(),
+        path: f.path.clone(),
+        wrap,
     };
-    let mut buf = Vec::with_capacity(max_bytes.min(64 * 1024));
-    let mut handle = file.take(max_bytes as u64);
-    if handle.read_to_end(&mut buf).is_err() {
-        return "<could not read file>".into();
+
+    match ext.as_str() {
+        "csv" => text(
+            format!("{} — table", f.name),
+            viewers::csv_preview(&f.path, false),
+            false,
+        ),
+        "tsv" => text(
+            format!("{} — table", f.name),
+            viewers::csv_preview(&f.path, true),
+            false,
+        ),
+        "json" => text(f.name.clone(), viewers::json_preview(&f.path), true),
+        "xml" | "plist" => text(f.name.clone(), viewers::xml_preview(&f.path), false),
+        "rtf" => text(f.name.clone(), viewers::rtf_preview(&f.path), true),
+        "pdf" => text(
+            format!("{} — extracted text", f.name),
+            viewers::pdf_preview(&f.path, f.size),
+            true,
+        ),
+        "docx" => text(
+            format!("{} — extracted text", f.name),
+            viewers::docx_preview(&f.path, f.size),
+            true,
+        ),
+        "xlsx" => text(
+            format!("{} — spreadsheet", f.name),
+            viewers::xlsx_preview(&f.path, f.size),
+            false,
+        ),
+        "pptx" => text(
+            format!("{} — slides", f.name),
+            viewers::pptx_preview(&f.path, f.size),
+            true,
+        ),
+        "epub" => text(
+            format!("{} — extracted text", f.name),
+            viewers::epub_preview(&f.path, f.size),
+            true,
+        ),
+        "db" | "sqlite" | "sqlite3" => text(
+            format!("{} — tables", f.name),
+            viewers::sqlite_preview(&f.path, f.size),
+            false,
+        ),
+        "heic" | "heif" => InspectorContent::Info {
+            title: f.name.clone(),
+            lines: vec![
+                format!("Kind:  Image ({ext})"),
+                format!("Size:  {}", crate::scan::human_size(f.size)),
+                format!("Path:  {}", f.path.display()),
+                String::new(),
+                "HEIC/HEIF is not decoded in-game (needs a system codec).".into(),
+                "Press R to reveal it in Finder.".into(),
+            ],
+            path: f.path.clone(),
+        },
+        "gz" if !is_tarball => text(f.name.clone(), viewers::gz_preview(&f.path), true),
+        "ttf" | "otf" => match viewers::read_font_bytes(&f.path) {
+            Ok(bytes) => InspectorContent::Font {
+                title: format!("{} — live preview", f.name),
+                meta,
+                path: f.path.clone(),
+                font: fonts.add(Font::from_bytes(bytes)),
+            },
+            Err(err) => text(
+                format!("{} — hex", f.name),
+                format!("Could not preview font: {err}\n\n{}", viewers::hex_dump(&f.path, 2048, f.size)),
+                false,
+            ),
+        },
+        _ => match f.kind {
+            FileKind::Text | FileKind::Code => {
+                text(f.name.clone(), viewers::read_text_preview(&f.path, 60 * 1024), true)
+            }
+            FileKind::Image => InspectorContent::Image {
+                title: f.name.clone(),
+                path: f.path.clone(),
+                meta,
+            },
+            FileKind::Archive => text(
+                format!("{} — contents", f.name),
+                viewers::archive_listing(&f.path),
+                false,
+            ),
+            FileKind::Video => InspectorContent::Info {
+                title: f.name.clone(),
+                lines: viewers::video_preview(&f.path, f.size),
+                path: f.path.clone(),
+            },
+            FileKind::Audio => InspectorContent::Info {
+                title: format!("{} — playing", f.name),
+                lines: viewers::audio_preview(&f.path, f.size),
+                path: f.path.clone(),
+            },
+            FileKind::Executable | FileKind::Data | FileKind::Other => text(
+                format!("{} — hex", f.name),
+                viewers::hex_dump(&f.path, 4096, f.size),
+                false,
+            ),
+        },
     }
-    let mut text = String::from_utf8_lossy(&buf).into_owned();
-    if buf.len() >= max_bytes {
-        text.push_str("\n\n… (truncated)");
-    }
-    text
 }
 
 /// Shows the file in its enclosing folder without opening the file: Finder's
@@ -374,126 +441,6 @@ fn reveal_in_finder(path: &std::path::Path) {
     if let Err(err) = result {
         warn!("failed to reveal {}: {err}", path.display());
     }
-}
-
-/// Classic hex+ASCII dump of the file's first bytes.
-fn hex_dump(path: &std::path::Path, max_bytes: usize, total_size: u64) -> String {
-    use std::io::Read;
-    let Ok(file) = std::fs::File::open(path) else {
-        return "<could not read file>".into();
-    };
-    let mut buf = Vec::with_capacity(max_bytes);
-    if file.take(max_bytes as u64).read_to_end(&mut buf).is_err() {
-        return "<could not read file>".into();
-    }
-    let mut out = String::with_capacity(buf.len() * 4);
-    for (i, chunk) in buf.chunks(16).enumerate() {
-        out.push_str(&format!("{:08x}  ", i * 16));
-        for j in 0..16 {
-            match chunk.get(j) {
-                Some(b) => out.push_str(&format!("{b:02x} ")),
-                None => out.push_str("   "),
-            }
-            if j == 7 {
-                out.push(' ');
-            }
-        }
-        out.push_str(" |");
-        for b in chunk {
-            out.push(if (0x20..0x7f).contains(b) { *b as char } else { '.' });
-        }
-        out.push_str("|\n");
-    }
-    if total_size > buf.len() as u64 {
-        out.push_str(&format!(
-            "\n… {} of {} shown",
-            crate::scan::human_size(buf.len() as u64),
-            crate::scan::human_size(total_size)
-        ));
-    }
-    out
-}
-
-/// Lists the entries inside zip- and tar-family archives, entirely in-game.
-fn archive_listing(path: &std::path::Path) -> String {
-    const MAX_ENTRIES: usize = 400;
-    let ext = path
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-
-    let mut entries: Vec<(String, u64)> = Vec::new();
-    let mut more = 0usize;
-
-    let result: Result<(), String> = (|| {
-        let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-        match ext.as_str() {
-            "zip" | "jar" | "whl" => {
-                let mut zip = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
-                for i in 0..zip.len() {
-                    let entry = zip.by_index_raw(i).map_err(|e| e.to_string())?;
-                    if entries.len() < MAX_ENTRIES {
-                        entries.push((entry.name().to_string(), entry.size()));
-                    } else {
-                        more += 1;
-                    }
-                }
-                Ok(())
-            }
-            "tar" => {
-                list_tar(file, &mut entries, &mut more, MAX_ENTRIES)
-            }
-            "tgz" | "crate" => {
-                list_tar(flate2::read::GzDecoder::new(file), &mut entries, &mut more, MAX_ENTRIES)
-            }
-            "gz" if name.ends_with(".tar.gz") => {
-                list_tar(flate2::read::GzDecoder::new(file), &mut entries, &mut more, MAX_ENTRIES)
-            }
-            _ => Err(format!("listing .{ext} archives is not supported")),
-        }
-    })();
-
-    match result {
-        Ok(()) => {
-            let mut out = format!("{} entries\n\n", entries.len() + more);
-            for (name, size) in &entries {
-                out.push_str(&format!("{:>9}  {}\n", crate::scan::human_size(*size), name));
-            }
-            if more > 0 {
-                out.push_str(&format!("\n… and {more} more"));
-            }
-            out
-        }
-        Err(err) => format!(
-            "Could not list contents: {err}\n\nFalling back to hex view:\n\n{}",
-            hex_dump(path, 1024, std::fs::metadata(path).map(|m| m.len()).unwrap_or(0))
-        ),
-    }
-}
-
-fn list_tar<R: std::io::Read>(
-    reader: R,
-    entries: &mut Vec<(String, u64)>,
-    more: &mut usize,
-    max: usize,
-) -> Result<(), String> {
-    let mut archive = tar::Archive::new(reader);
-    for entry in archive.entries().map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        if entries.len() < max {
-            entries.push((
-                entry.path().map_err(|e| e.to_string())?.display().to_string(),
-                entry.size(),
-            ));
-        } else {
-            *more += 1;
-        }
-    }
-    Ok(())
 }
 
 fn hold_carried_prop(

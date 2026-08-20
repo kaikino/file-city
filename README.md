@@ -46,16 +46,31 @@ executes the files it shows.
 
 Files are never launched or opened by an external app:
 
+- **Images** (png/jpeg/gif/webp/bmp/tiff/ico/svg) — fullscreen viewer you can
+  scroll/pan. SVG is rasterized; GIF is the first frame.
 - **Text / code** — fullscreen reader with scrolling.
-- **Images** — fullscreen viewer.
-- **Audio** — decoded and played by the engine (mp3/wav/flac/ogg).
-- **Archives** — zip/jar/whl/tar/tgz/crate contents listed in the reader.
-- **Executables, data, unknown binaries** — classic hex+ASCII dump viewer.
-- **Video** — metadata card (video decoding is the one thing not done
-  in-game).
+- **CSV / TSV** — padded column table.
+- **JSON / XML / plist** — pretty-printed (binary plists fall back to hex).
+- **RTF** — control words stripped to readable prose.
+- **PDF** — extracted text of the first pages.
+- **docx / xlsx / pptx / epub** — unzipped and stripped to text / sheet sample
+  / slide text.
+- **SQLite** — table names, row counts and a few sample rows.
+- **Fonts** (ttf/otf) — live pangram preview in the file's own typeface.
+- **Archives** — zip/jar/whl/tar/tgz/crate listings; plain `.gz` is
+  decompressed.
+- **Audio** (mp3/wav/flac/ogg) — plays in-game and shows a metadata card.
+  AAC/m4a is listed but not decoded.
+- **Video** (mp4/mov) — container brand and duration when the header is
+  readable; frames are not decoded.
+- **Executables and unknown binaries** — classic hex+ASCII dump.
 
 The one deliberate bridge back to the OS: press **R** to reveal a file's
 location in Finder — it selects the file in its folder without opening it.
+
+**Not in-game** (too heavy or proprietary): HEIC, 7z/rar, video playback,
+Excel layout, Word formatting, Keynote/Pages/Numbers, machine-learning
+weight files. Those get a hex dump or a short explanation plus **R**.
 
 ## Run
 
@@ -81,7 +96,7 @@ development: `cargo run --features dev`.
 | WASD | Move |
 | Shift | Sprint |
 | Space | Jump |
-| E | Inspect: read text, view image, play audio, list archive, hex dump |
+| E | Inspect (and play audio): read, view, pan images, list archives, hex dump |
 | R | Reveal the file's location in Finder (does not open the file) |
 | F | Grab / drop a small prop (gravity-gun carry) |
 | Esc | Close overlay / release mouse |

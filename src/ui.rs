@@ -207,7 +207,7 @@ fn update_tooltip(
                 let close_enough = info.distance <= 14.0;
                 match info.file.kind {
                     crate::scan::FileKind::Audio if close_enough => {
-                        hints.push("E play/stop");
+                        hints.push("E play + inspect");
                     }
                     crate::scan::FileKind::Archive if close_enough => {
                         hints.push("E list contents");
@@ -297,6 +297,7 @@ fn rebuild_inspector(
     inspector: Res<Inspector>,
     existing: Query<Entity, With<InspectorRoot>>,
     cache: Res<ImageCache>,
+    images: Res<Assets<Image>>,
     mut request_image: MessageWriter<RequestImage>,
 ) {
     if !inspector.is_changed() {
@@ -345,6 +346,7 @@ fn rebuild_inspector(
         InspectorContent::Text { title, meta, .. } => (title.clone(), meta.clone()),
         InspectorContent::Image { title, meta, .. } => (title.clone(), meta.clone()),
         InspectorContent::Info { title, .. } => (title.clone(), String::new()),
+        InspectorContent::Font { title, meta, .. } => (title.clone(), meta.clone()),
     };
     commands.spawn((
         Text::new(title),
@@ -362,13 +364,13 @@ fn rebuild_inspector(
     }
 
     match content {
-        InspectorContent::Text { body, .. } => {
+        InspectorContent::Text { body, wrap, .. } => {
             let scroll = commands
                 .spawn((
                     InspectorScroll,
                     Node {
                         flex_grow: 1.0,
-                        overflow: Overflow::scroll_y(),
+                        overflow: Overflow::scroll(),
                         flex_direction: FlexDirection::Column,
                         padding: UiRect::all(Val::Px(12.0)),
                         border_radius: BorderRadius::all(Val::Px(8.0)),
@@ -383,32 +385,27 @@ fn rebuild_inspector(
                 Text::new(body.clone()),
                 TextFont::from_font_size(15.0),
                 TextColor(Color::srgb(0.80, 0.88, 0.82)),
+                TextLayout {
+                    linebreak: if *wrap {
+                        LineBreak::WordOrCharacter
+                    } else {
+                        LineBreak::NoWrap
+                    },
+                    ..default()
+                },
                 ChildOf(scroll),
             ));
         }
         InspectorContent::Image { path, .. } => {
-            let holder = commands
-                .spawn((
-                    Node {
-                        flex_grow: 1.0,
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
-                        overflow: Overflow::clip(),
-                        ..default()
-                    },
-                    ChildOf(panel),
-                ))
-                .id();
-            if let Some(handle) = cache.0.get(path) {
-                commands.spawn((
-                    ImageNode::new(handle.clone()),
-                    Node {
-                        max_width: Val::Percent(100.0),
-                        max_height: Val::Percent(100.0),
-                        ..default()
-                    },
-                    ChildOf(holder),
-                ));
+            let holder = spawn_image_scroll_pane(&mut commands, panel);
+            if let Some(handle) = cache.map.get(path) {
+                spawn_native_image(&mut commands, handle.clone(), &images, holder);
+            } else if cache.failed.contains(path) {
+                spawn_inspector_note(
+                    &mut commands,
+                    holder,
+                    "Could not decode this image in-game.\nPress R to reveal it in Finder.",
+                );
             } else {
                 request_image.write(RequestImage(path.clone()));
                 commands.spawn((
@@ -420,15 +417,49 @@ fn rebuild_inspector(
                 ));
             }
         }
+        InspectorContent::Font { font, .. } => {
+            let scroll = commands
+                .spawn((
+                    InspectorScroll,
+                    Node {
+                        flex_grow: 1.0,
+                        overflow: Overflow::scroll(),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(18.0),
+                        padding: UiRect::all(Val::Px(16.0)),
+                        border_radius: BorderRadius::all(Val::Px(8.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.02, 0.03, 0.05, 0.9)),
+                    ScrollPosition(Vec2::ZERO),
+                    ChildOf(panel),
+                ))
+                .id();
+            for (i, pangram) in crate::viewers::FONT_PANGRAMS.iter().enumerate() {
+                let size = [42.0, 26.0, 18.0][i.min(2)];
+                let mut text_font = TextFont::from_font_size(size);
+                text_font.font = FontSource::Handle(font.clone());
+                commands.spawn((
+                    Text::new(*pangram),
+                    text_font,
+                    TextColor(TEXT_MAIN),
+                    ChildOf(scroll),
+                ));
+            }
+        }
         InspectorContent::Info { lines, .. } => {
             let body = commands
                 .spawn((
+                    InspectorScroll,
                     Node {
+                        flex_grow: 1.0,
+                        overflow: Overflow::scroll(),
                         flex_direction: FlexDirection::Column,
                         row_gap: Val::Px(6.0),
                         padding: UiRect::all(Val::Px(12.0)),
                         ..default()
                     },
+                    ScrollPosition(Vec2::ZERO),
                     ChildOf(panel),
                 ))
                 .id();
@@ -444,33 +475,91 @@ fn rebuild_inspector(
     }
 
     commands.spawn((
-        Text::new("E / Esc close · R reveal in Finder · scroll to read"),
+        Text::new("E / Esc close · R reveal in Finder · scroll to pan"),
         TextFont::from_font_size(13.0),
         TextColor(TEXT_DIM),
         ChildOf(panel),
     ));
 }
 
-/// Swap the "Loading image…" placeholder for the picture once decoded.
+/// Swap the "Loading image…" placeholder for the picture once decoded,
+/// or an error note if decoding failed.
 fn fill_inspector_image(
     mut commands: Commands,
     slots: Query<(Entity, &InspectorImageSlot, &ChildOf)>,
     cache: Res<ImageCache>,
+    images: Res<Assets<Image>>,
 ) {
     for (entity, slot, child_of) in &slots {
-        if let Some(handle) = cache.0.get(&slot.0) {
+        if let Some(handle) = cache.map.get(&slot.0) {
             commands.entity(entity).despawn();
-            commands.spawn((
-                ImageNode::new(handle.clone()),
-                Node {
-                    max_width: Val::Percent(100.0),
-                    max_height: Val::Percent(100.0),
-                    ..default()
-                },
-                ChildOf(child_of.0),
-            ));
+            spawn_native_image(&mut commands, handle.clone(), &images, child_of.0);
+        } else if cache.failed.contains(&slot.0) {
+            commands.entity(entity).despawn();
+            spawn_inspector_note(
+                &mut commands,
+                child_of.0,
+                "Could not decode this image in-game.\nPress R to reveal it in Finder.",
+            );
         }
     }
+}
+
+fn spawn_image_scroll_pane(commands: &mut Commands, panel: Entity) -> Entity {
+    commands
+        .spawn((
+            InspectorScroll,
+            Node {
+                flex_grow: 1.0,
+                overflow: Overflow::scroll(),
+                // Top-left so a taller/wider image can actually be panned;
+                // centering a clipped child is what made scroll a no-op.
+                justify_content: JustifyContent::Start,
+                align_items: AlignItems::Start,
+                border_radius: BorderRadius::all(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.02, 0.03, 0.05, 0.9)),
+            ScrollPosition(Vec2::ZERO),
+            ChildOf(panel),
+        ))
+        .id()
+}
+
+fn spawn_native_image(
+    commands: &mut Commands,
+    handle: Handle<Image>,
+    images: &Assets<Image>,
+    parent: Entity,
+) {
+    let (w, h) = images
+        .get(&handle)
+        .map(|img| (img.width() as f32, img.height() as f32))
+        .unwrap_or((800.0, 600.0));
+    commands.spawn((
+        ImageNode::new(handle),
+        Node {
+            width: Val::Px(w),
+            height: Val::Px(h),
+            min_width: Val::Px(w),
+            min_height: Val::Px(h),
+            ..default()
+        },
+        ChildOf(parent),
+    ));
+}
+
+fn spawn_inspector_note(commands: &mut Commands, parent: Entity, note: &str) {
+    commands.spawn((
+        Text::new(note),
+        TextFont::from_font_size(16.0),
+        TextColor(TEXT_DIM),
+        Node {
+            padding: UiRect::all(Val::Px(12.0)),
+            ..default()
+        },
+        ChildOf(parent),
+    ));
 }
 
 fn scroll_inspector(
@@ -478,11 +567,12 @@ fn scroll_inspector(
     mut scrollers: Query<&mut ScrollPosition, With<InspectorScroll>>,
 ) {
     for event in wheel.read() {
-        let dy = match event.unit {
-            bevy::input::mouse::MouseScrollUnit::Line => event.y * 36.0,
-            bevy::input::mouse::MouseScrollUnit::Pixel => event.y,
+        let (dx, dy) = match event.unit {
+            bevy::input::mouse::MouseScrollUnit::Line => (event.x * 36.0, event.y * 36.0),
+            bevy::input::mouse::MouseScrollUnit::Pixel => (event.x, event.y),
         };
         for mut scroll in &mut scrollers {
+            scroll.0.x = (scroll.0.x - dx).max(0.0);
             scroll.0.y = (scroll.0.y - dy).max(0.0);
         }
     }

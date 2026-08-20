@@ -89,8 +89,13 @@ enum BudgetKind {
 }
 
 /// Decoded image textures by file path, reused by the inspector overlay.
+/// Paths that failed to decode are remembered so the UI can say so instead
+/// of showing a spinner forever.
 #[derive(Resource, Default)]
-pub struct ImageCache(pub HashMap<PathBuf, Handle<Image>>);
+pub struct ImageCache {
+    pub map: HashMap<PathBuf, Handle<Image>>,
+    pub failed: std::collections::HashSet<PathBuf>,
+}
 
 /// Ask filereps to decode an image that has no nearby screen (inspector use).
 #[derive(Message)]
@@ -325,7 +330,7 @@ fn activate_screens(
         {
             let path = screen.path.clone();
             let task = AsyncComputeTaskPool::get()
-                .spawn(async move { decode_image(&path) });
+                .spawn(async move { decode_image(&path, 1024) });
             tasks.0.push((Some(entity), screen.path.clone(), task));
             commands.entity(entity).insert(PendingScreen);
             budget.images += 1;
@@ -516,7 +521,7 @@ fn deactivate_far_screens(
             if Some(&screen.path) == inspected_path.as_ref() {
                 continue;
             }
-            cache.0.remove(&screen.path);
+            cache.map.remove(&screen.path);
         }
         commands
             .entity(entity)
@@ -546,9 +551,21 @@ struct DecodedImage {
 #[derive(Resource, Default)]
 struct ImageTasks(Vec<(Option<Entity>, PathBuf, Task<Option<DecodedImage>>)>);
 
-fn decode_image(path: &Path) -> Option<DecodedImage> {
+fn decode_image(path: &Path, max_dim: u32) -> Option<DecodedImage> {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if ext == "svg" {
+        let (width, height, rgba) = crate::viewers::rasterize_svg(path, max_dim)?;
+        return Some(DecodedImage {
+            width,
+            height,
+            rgba,
+        });
+    }
     let img = image::open(path).ok()?;
-    let img = img.thumbnail(1024, 1024).to_rgba8();
+    let img = img.thumbnail(max_dim, max_dim).to_rgba8();
     Some(DecodedImage {
         width: img.width(),
         height: img.height(),
@@ -556,19 +573,23 @@ fn decode_image(path: &Path) -> Option<DecodedImage> {
     })
 }
 
-/// Inspector asked for an image with no active screen nearby.
+/// Inspector asked for an image with no active screen nearby. Decoded at a
+/// higher resolution than building screens since it fills the viewport.
 fn handle_image_requests(
     mut requests: MessageReader<RequestImage>,
     cache: Res<ImageCache>,
     mut tasks: ResMut<ImageTasks>,
 ) {
     for RequestImage(path) in requests.read() {
-        if cache.0.contains_key(path) || tasks.0.iter().any(|(_, p, _)| p == path) {
+        if cache.map.contains_key(path)
+            || cache.failed.contains(path)
+            || tasks.0.iter().any(|(_, p, _)| p == path)
+        {
             continue;
         }
         let path_clone = path.clone();
         let task = AsyncComputeTaskPool::get()
-            .spawn(async move { decode_image(&path_clone) });
+            .spawn(async move { decode_image(&path_clone, 2048) });
         tasks.0.push((None, path.clone(), task));
     }
 }
@@ -594,6 +615,7 @@ fn poll_image_tasks(
     for (i, result) in finished.into_iter().rev() {
         let (panel, path, _) = tasks.0.remove(i);
         let Some(decoded) = result else {
+            cache.failed.insert(path);
             if let Some(panel_entity) = panel {
                 budget.images = budget.images.saturating_sub(1);
                 if let Ok(mut e) = commands.get_entity(panel_entity) {
@@ -613,7 +635,7 @@ fn poll_image_tasks(
             TextureFormat::Rgba8UnormSrgb,
             RenderAssetUsages::default(),
         ));
-        cache.0.insert(path, image_handle.clone());
+        cache.map.insert(path, image_handle.clone());
 
         let Some(panel_entity) = panel else { continue };
         let Ok((screen, mut transform, fitted)) = panels.get_mut(panel_entity) else {
