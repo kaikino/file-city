@@ -1,5 +1,7 @@
+mod citygen;
 mod scan;
 
+use avian3d::prelude::*;
 use bevy::prelude::*;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -65,6 +67,8 @@ fn main() {
             }),
             ..default()
         }))
+        .add_plugins(PhysicsPlugins::default())
+        .add_plugins(citygen::CityGenPlugin)
         .insert_resource(cfg)
         .init_state::<AppState>()
         .add_systems(Startup, setup_scan)
