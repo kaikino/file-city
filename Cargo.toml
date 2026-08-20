@@ -7,7 +7,6 @@ description = "First-person 3D filesystem explorer: your files as an interactive
 [dependencies]
 bevy = { version = "0.19", features = ["mp3", "wav", "flac"] }
 avian3d = "0.7"
-walkdir = "2"
 image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
