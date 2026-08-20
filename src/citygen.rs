@@ -430,8 +430,15 @@ pub fn build_city(
         meshes: &city_meshes,
         palette: &palette,
         districts: &mut districts,
+        sign_count: 0,
     };
     spawn_district(&mut ctx, root, root_rect, 0, root.name.clone());
+    info!(
+        "city built: {} districts, {} signs, side {:.0}m",
+        ctx.districts.0.len(),
+        ctx.sign_count,
+        side
+    );
 
     let spawn_pos = Vec3::new(0.0, 2.0, root_rect.max().y + 7.0);
     commands.insert_resource(CityMeta {
@@ -448,6 +455,7 @@ struct SpawnCtx<'a, 'w, 's> {
     meshes: &'a CityMeshes,
     palette: &'a Palette,
     districts: &'a mut Districts,
+    sign_count: usize,
 }
 
 fn spawn_district(
@@ -484,19 +492,22 @@ fn spawn_district(
         spawn_walls(ctx, rect, top);
     }
 
-    // Floating name sign on the south edge for shallow districts.
+    // Floating name sign hovering just outside the south edge (near the gate).
     if depth >= 1 && depth <= 2 && rect.size.x > 6.0 {
+        ctx.sign_count += 1;
+        let sign_w = (rect.size.x * 0.55).clamp(5.0, 11.0);
+        let sign_y = top + 3.4;
         ctx.commands.spawn((
             Mesh3d(ctx.meshes.quad.clone()),
             MeshMaterial3d(ctx.palette.sign_bg.clone()),
-            Transform::from_xyz(center.x, top + 3.0, rect.max().y - 0.3)
-                .with_scale(Vec3::new((rect.size.x * 0.5).clamp(3.6, 7.0), 1.1, 1.0)),
+            Transform::from_xyz(center.x, sign_y, rect.max().y + 0.8)
+                .with_scale(Vec3::new(sign_w, sign_w * 0.25, 1.0)),
             SignText(node.name.clone()),
             NotShadowCaster,
             Bobber {
-                base_y: top + 3.0,
+                base_y: sign_y,
                 phase: center.x * 0.37,
-                amp: 0.08,
+                amp: 0.1,
             },
         ));
     }

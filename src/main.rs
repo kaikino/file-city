@@ -95,8 +95,109 @@ fn main() {
             (poll_scan, animate_loading_screen).run_if(in_state(AppState::Scanning)),
         )
         .add_systems(OnExit(AppState::Scanning), teardown_loading_screen)
+        .add_systems(Update, debug_screenshot.run_if(in_state(AppState::Playing)))
         .run();
 }
+
+/// With `--shot out.png`: capture a screenshot a few seconds into gameplay
+/// and exit. Renders a mirror of the player camera into an offscreen texture,
+/// because reading back the window surface is not supported everywhere.
+fn debug_screenshot(
+    mut commands: Commands,
+    cfg: Res<ScanConfig>,
+    mut frames: Local<u32>,
+    mut exit: MessageWriter<AppExit>,
+    mut images: ResMut<Assets<Image>>,
+    player_cam: Query<&GlobalTransform, With<player::PlayerCamera>>,
+    mut player_body: Query<(&mut Transform, &mut LinearVelocity), With<player::Player>>,
+    signs: Query<&GlobalTransform, With<citygen::SignText>>,
+    shot_target: Option<Res<ShotTarget>>,
+) {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::camera::{Hdr, RenderTarget};
+    use bevy::post_process::bloom::Bloom;
+    use bevy::render::render_resource::{
+        Extent3d, TextureDimension, TextureFormat, TextureUsages,
+    };
+    use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
+
+    let Some(path) = cfg.shot.clone() else { return };
+    *frames += 1;
+
+    // Drop the player into the city center so the capture shows active
+    // screens, signs and props at close range.
+    if *frames == 100 {
+        if let Ok((mut transform, mut velocity)) = player_body.single_mut() {
+            transform.translation = Vec3::new(0.0, 6.0, 0.0);
+            velocity.0 = Vec3::ZERO;
+        }
+    }
+
+    if *frames == 260 {
+        let mut image = Image::new_fill(
+            Extent3d {
+                width: 1280,
+                height: 800,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[0, 0, 0, 255],
+            TextureFormat::Bgra8UnormSrgb,
+            RenderAssetUsages::default(),
+        );
+        image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING
+            | TextureUsages::COPY_DST
+            | TextureUsages::COPY_SRC
+            | TextureUsages::RENDER_ATTACHMENT;
+        let handle = images.add(image);
+        // Frame the nearest district sign from a raised vantage so the shot
+        // shows signs, screens and the city layout together.
+        let player_pos = player_cam
+            .single()
+            .map(|g| g.translation())
+            .unwrap_or(Vec3::new(0.0, 2.0, 0.0));
+        let sign_pos = signs
+            .iter()
+            .map(|g| g.translation())
+            .min_by(|a, b| {
+                a.distance_squared(player_pos)
+                    .total_cmp(&b.distance_squared(player_pos))
+            })
+            .unwrap_or(player_pos + Vec3::new(0.0, 0.0, -20.0));
+        let transform = Transform::from_translation(sign_pos + Vec3::new(-6.0, 7.0, 26.0))
+            .looking_at(sign_pos + Vec3::new(0.0, -1.0, -12.0), Vec3::Y);
+        commands.spawn((
+            Camera3d::default(),
+            Hdr,
+            Camera {
+                order: 5,
+                ..default()
+            },
+            RenderTarget::Image(handle.clone().into()),
+            Projection::Perspective(PerspectiveProjection {
+                fov: 62f32.to_radians(),
+                ..default()
+            }),
+            transform,
+            Bloom::NATURAL,
+            bevy::camera::Exposure { ev100: 9.7 },
+        ));
+        commands.insert_resource(ShotTarget(handle));
+    }
+    if *frames == 330 {
+        if let Some(target) = shot_target {
+            commands
+                .spawn(Screenshot(RenderTarget::Image(target.0.clone().into())))
+                .observe(save_to_disk(path));
+        }
+    }
+    if *frames > 400 {
+        exit.write(AppExit::Success);
+    }
+}
+
+#[derive(Resource)]
+struct ShotTarget(Handle<Image>);
 
 fn setup_lighting(mut commands: Commands, mut ambient: ResMut<GlobalAmbientLight>) {
     ambient.color = Color::srgb(0.75, 0.85, 1.0);

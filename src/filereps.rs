@@ -104,6 +104,11 @@ struct ScrollText(f32);
 #[derive(Component)]
 struct Fitted;
 
+/// Panels whose content could not be produced (e.g. unsupported image
+/// format); left dark and never retried.
+#[derive(Component)]
+struct ScreenFailed;
+
 // ---------------------------------------------------------------------------
 // Render-to-texture text pipeline
 // ---------------------------------------------------------------------------
@@ -155,15 +160,15 @@ fn activate_screens(
     player: Query<&Transform, With<Player>>,
     text_screens: Query<
         (Entity, &GlobalTransform, &TextScreen),
-        (Without<PendingScreen>, Without<ScreenReady>),
+        (Without<PendingScreen>, Without<ScreenReady>, Without<ScreenFailed>),
     >,
     image_screens: Query<
         (Entity, &GlobalTransform, &ImageScreen),
-        (Without<PendingScreen>, Without<ScreenReady>),
+        (Without<PendingScreen>, Without<ScreenReady>, Without<ScreenFailed>),
     >,
     signs: Query<
         (Entity, &GlobalTransform, &SignText),
-        (Without<PendingScreen>, Without<ScreenReady>),
+        (Without<PendingScreen>, Without<ScreenReady>, Without<ScreenFailed>),
     >,
     mut budget: ResMut<ScreenBudget>,
     mut queue: ResMut<RttQueue>,
@@ -351,17 +356,32 @@ fn process_rtt_queue(
             RenderLayers::layer(RTT_LAYER),
         ))
         .id();
+    // Marquees hang top-anchored so long content scrolls up through the
+    // panel; signs are centered on both axes.
+    let (anchor, position, justify) = if job.scroll {
+        (
+            Anchor(Vec2::new(0.0, 0.5)),
+            Vec3::new(0.0, job.height as f32 * 0.5 - 8.0, 0.0),
+            Justify::Left,
+        )
+    } else {
+        (Anchor(Vec2::ZERO), Vec3::ZERO, Justify::Center)
+    };
     let text_entity = commands
         .spawn((
             Text2d::new(job.text.clone()),
             TextFont::from_font_size(job.font_size),
             TextColor(job.fg),
+            TextLayout {
+                justify,
+                ..default()
+            },
             TextBounds {
                 width: Some(job.width as f32 - 18.0),
                 height: None,
             },
-            Anchor(Vec2::new(0.0, 0.5)),
-            Transform::from_xyz(0.0, job.height as f32 * 0.5 - 8.0, 0.0),
+            anchor,
+            Transform::from_translation(position),
             RenderLayers::layer(RTT_LAYER),
         ))
         .id();
@@ -493,8 +513,11 @@ fn poll_image_tasks(
     for (i, result) in finished.into_iter().rev() {
         let (panel, path, _) = tasks.0.remove(i);
         let Some(decoded) = result else {
-            if panel.is_some() {
+            if let Some(panel_entity) = panel {
                 budget.images = budget.images.saturating_sub(1);
+                if let Ok(mut e) = commands.get_entity(panel_entity) {
+                    e.insert(ScreenFailed);
+                }
             }
             continue;
         };
