@@ -3,6 +3,7 @@ mod filereps;
 mod interact;
 mod player;
 mod scan;
+mod ui;
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
@@ -83,6 +84,7 @@ fn main() {
             player::PlayerPlugin,
             interact::InteractPlugin,
             filereps::FileRepsPlugin,
+            ui::UiPlugin,
         ))
         .insert_resource(cfg)
         .init_state::<AppState>()
@@ -107,6 +109,12 @@ fn setup_lighting(mut commands: Commands, mut ambient: ResMut<GlobalAmbientLight
             shadow_maps_enabled: true,
             ..default()
         },
+        bevy::light::CascadeShadowConfigBuilder {
+            maximum_distance: 170.0,
+            first_cascade_far_bound: 14.0,
+            ..default()
+        }
+        .build(),
         Transform::from_rotation(Quat::from_euler(
             EulerRot::YXZ,
             35f32.to_radians(),
