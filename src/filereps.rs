@@ -733,6 +733,7 @@ fn animate_bobbers(mut query: Query<(&mut Transform, &Bobber)>, time: Res<Time>)
 /// rooftop beacons and erratically flickering neon.
 fn pulse_emissives(
     palette: Option<Res<Palette>>,
+    night: Res<crate::atmo::NightFactor>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     time: Res<Time>,
 ) {
@@ -754,7 +755,7 @@ fn pulse_emissives(
         let step = (t * 16.0) as u32;
         let noise = step.wrapping_mul(2654435761) >> 8;
         let on = noise % 100 < 82;
-        let level = if on { 5.0 } else { 0.25 };
+        let level = if on { 2.2 + 3.6 * night.0 } else { 0.25 };
         mat.emissive = LinearRgba::from(Color::srgb(1.0, 0.25, 0.45)) * level;
     }
 }

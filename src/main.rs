@@ -1,3 +1,4 @@
+mod atmo;
 mod buildings;
 mod citygen;
 mod filereps;
@@ -82,6 +83,7 @@ fn main() {
         .add_plugins(PhysicsPlugins::default())
         .add_plugins((
             citygen::CityGenPlugin,
+            atmo::AtmoPlugin,
             player::PlayerPlugin,
             interact::InteractPlugin,
             filereps::FileRepsPlugin,
@@ -90,7 +92,7 @@ fn main() {
         .insert_resource(cfg)
         .init_state::<AppState>()
         .configure_sets(Update, (GameSet::Player, GameSet::Interact).chain())
-        .add_systems(Startup, (setup_scan, setup_lighting))
+        .add_systems(Startup, setup_scan)
         .add_systems(
             Update,
             (poll_scan, animate_loading_screen).run_if(in_state(AppState::Scanning)),
@@ -201,32 +203,6 @@ fn debug_screenshot(
 
 #[derive(Resource)]
 struct ShotTarget(Handle<Image>);
-
-fn setup_lighting(mut commands: Commands, mut ambient: ResMut<GlobalAmbientLight>) {
-    ambient.color = Color::srgb(0.75, 0.85, 1.0);
-    ambient.brightness = 220.0;
-    commands.insert_resource(ClearColor(Color::srgb(0.48, 0.65, 0.86)));
-    commands.spawn((
-        DirectionalLight {
-            color: Color::srgb(1.0, 0.96, 0.88),
-            illuminance: 9200.0,
-            shadow_maps_enabled: true,
-            ..default()
-        },
-        bevy::light::CascadeShadowConfigBuilder {
-            maximum_distance: 170.0,
-            first_cascade_far_bound: 14.0,
-            ..default()
-        }
-        .build(),
-        Transform::from_rotation(Quat::from_euler(
-            EulerRot::YXZ,
-            35f32.to_radians(),
-            -52f32.to_radians(),
-            0.0,
-        )),
-    ));
-}
 
 #[derive(Component)]
 struct LoadingUi;
