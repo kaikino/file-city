@@ -1,4 +1,5 @@
 mod citygen;
+mod interact;
 mod player;
 mod scan;
 
@@ -14,6 +15,13 @@ pub enum AppState {
     #[default]
     Scanning,
     Playing,
+}
+
+/// Update-schedule ordering: player input/motion first, then interaction.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GameSet {
+    Player,
+    Interact,
 }
 
 /// The scanned directory tree, available once scanning completes.
@@ -69,9 +77,14 @@ fn main() {
             ..default()
         }))
         .add_plugins(PhysicsPlugins::default())
-        .add_plugins((citygen::CityGenPlugin, player::PlayerPlugin))
+        .add_plugins((
+            citygen::CityGenPlugin,
+            player::PlayerPlugin,
+            interact::InteractPlugin,
+        ))
         .insert_resource(cfg)
         .init_state::<AppState>()
+        .configure_sets(Update, (GameSet::Player, GameSet::Interact).chain())
         .add_systems(Startup, (setup_scan, setup_lighting))
         .add_systems(
             Update,

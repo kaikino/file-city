@@ -42,6 +42,7 @@ impl Plugin for PlayerPlugin {
                     respawn_if_fallen,
                 )
                     .chain()
+                    .in_set(crate::GameSet::Player)
                     .run_if(in_state(AppState::Playing)),
             );
     }
@@ -110,7 +111,12 @@ fn cursor_input(
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut grab: ResMut<CursorGrabbed>,
+    inspector: Res<crate::interact::Inspector>,
 ) {
+    // While the inspector overlay is open, it owns Esc/click handling.
+    if inspector.0.is_some() {
+        return;
+    }
     if keys.just_pressed(KeyCode::Escape) && grab.0 {
         grab.0 = false;
     } else if mouse.just_pressed(MouseButton::Left) && !grab.0 {
