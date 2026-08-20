@@ -90,9 +90,10 @@ pub struct District {
 #[derive(Resource, Default)]
 pub struct Districts(pub Vec<District>);
 
-/// Street-corner points (perimeter alley gaps) used for lamps and crosswalks.
+/// Street-gate points (perimeter alley gaps) with their outward street
+/// direction; used for lamps and crosswalks.
 #[derive(Resource, Default)]
-pub struct Gates(pub Vec<Vec3>);
+pub struct Gates(pub Vec<(Vec3, Vec2)>);
 
 /// Global facts about the generated city.
 #[derive(Resource)]
@@ -108,6 +109,7 @@ pub struct CityMeshes {
     pub sphere: Handle<Mesh>,
     pub cylinder: Handle<Mesh>,
     pub quad: Handle<Mesh>,
+    pub circle: Handle<Mesh>,
 }
 
 pub const NEON_COLORS: [Color; 6] = [
@@ -144,6 +146,8 @@ pub struct Palette {
     pub awning: [Handle<StandardMaterial>; 2],
     pub vend_front: [Handle<StandardMaterial>; 2],
     pub beacon: Handle<StandardMaterial>,
+    pub crosswalk: Handle<StandardMaterial>,
+    pub puddle: Handle<StandardMaterial>,
 }
 
 pub fn kind_color(kind: FileKind) -> Color {
@@ -332,6 +336,92 @@ const ROW_DEPTH: f32 = 6.0;
 const PROP_SIZE_LIMIT: u64 = 4096;
 
 // ---------------------------------------------------------------------------
+// Procedural textures
+// ---------------------------------------------------------------------------
+
+fn hash01(x: u32, y: u32, salt: u32) -> f32 {
+    let mut h = x
+        .wrapping_mul(374_761_393)
+        .wrapping_add(y.wrapping_mul(668_265_263))
+        .wrapping_add(salt.wrapping_mul(2_246_822_519));
+    h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+    ((h ^ (h >> 16)) & 0xffff) as f32 / 65535.0
+}
+
+fn make_texture(
+    images: &mut Assets<Image>,
+    size: u32,
+    repeat: bool,
+    px: impl Fn(u32, u32) -> [u8; 4],
+) -> Handle<Image> {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+
+    let mut data = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            data.extend_from_slice(&px(x, y));
+        }
+    }
+    let mut image = Image::new(
+        Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    if repeat {
+        image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+            address_mode_u: ImageAddressMode::Repeat,
+            address_mode_v: ImageAddressMode::Repeat,
+            ..ImageSamplerDescriptor::linear()
+        });
+    }
+    images.add(image)
+}
+
+/// Grainy asphalt with occasional bright speckles.
+fn asphalt_texture(images: &mut Assets<Image>) -> Handle<Image> {
+    make_texture(images, 256, true, |x, y| {
+        let n = hash01(x, y, 1);
+        let speckle = if hash01(x, y, 2) > 0.995 { 26.0 } else { 0.0 };
+        let v = (198.0 + (n - 0.5) * 46.0 + speckle) as u8;
+        [v, v, v.saturating_add(6), 255]
+    })
+}
+
+/// Vertical grime streaks multiplied over building body colors.
+fn grunge_texture(images: &mut Assets<Image>) -> Handle<Image> {
+    make_texture(images, 128, false, |x, y| {
+        let streak = 0.86 + 0.14 * hash01(x / 3, 7, 3);
+        let fine = 0.95 + 0.05 * hash01(x, y, 4);
+        // Grime gathers toward the base of the wall.
+        let grad = 1.0 - 0.18 * (y as f32 / 127.0).powi(3);
+        let v = (255.0 * streak * fine * grad) as u8;
+        [v, v, v, 255]
+    })
+}
+
+/// White zebra bands with ragged edges on transparent ground.
+fn crosswalk_texture(images: &mut Assets<Image>) -> Handle<Image> {
+    make_texture(images, 64, false, |x, y| {
+        let band = (y / 8) % 2 == 0;
+        let wear = hash01(x, y, 5);
+        if band && wear > 0.15 {
+            let v = 200 + (wear * 40.0) as u8;
+            [v, v, v, 235]
+        } else {
+            [0, 0, 0, 0]
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
 // City construction
 // ---------------------------------------------------------------------------
 
@@ -340,14 +430,15 @@ pub fn build_city(
     tree: Res<CityTree>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     let city_meshes = CityMeshes {
         cube: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
         sphere: meshes.add(Sphere::new(0.5)),
         cylinder: meshes.add(Cylinder::new(0.5, 1.0)),
         quad: meshes.add(Rectangle::new(1.0, 1.0)),
+        circle: meshes.add(Circle::new(0.5)),
     };
-    let palette = make_palette(&mut materials);
 
     // --- Root layout ------------------------------------------------------
     let root = &tree.0;
@@ -357,6 +448,8 @@ pub fn build_city(
         min: Vec2::splat(-side * 0.5),
         size: Vec2::splat(side),
     };
+
+    let palette = make_palette(&mut materials, &mut images, side);
 
     // Asphalt ground extending past the city.
     let ground_side = side + 140.0;
@@ -379,6 +472,8 @@ pub fn build_city(
         building_count: 0,
     };
     spawn_district(&mut ctx, root, root_rect, 0, root.name.clone());
+    spawn_crosswalks(&mut ctx);
+    spawn_puddles(&mut ctx, root_rect);
     info!(
         "city built: {} districts, {} buildings, side {:.0}m",
         ctx.districts.0.len(),
@@ -397,7 +492,15 @@ pub fn build_city(
     commands.insert_resource(gates);
 }
 
-fn make_palette(materials: &mut Assets<StandardMaterial>) -> Palette {
+fn make_palette(
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+    city_side: f32,
+) -> Palette {
+    let asphalt = asphalt_texture(images);
+    let grunge = grunge_texture(images);
+    let zebra = crosswalk_texture(images);
+
     let concrete = |color: Color, rough: f32| StandardMaterial {
         base_color: color,
         perceptual_roughness: rough,
@@ -430,7 +533,14 @@ fn make_palette(materials: &mut Assets<StandardMaterial>) -> Palette {
     ] {
         body.insert(
             kind,
-            [0, 1, 2, 3].map(|s| materials.add(concrete(body_color(kind, s), 0.92))),
+            [0, 1, 2, 3].map(|s| {
+                materials.add(StandardMaterial {
+                    base_color: body_color(kind, s),
+                    base_color_texture: Some(grunge.clone()),
+                    perceptual_roughness: 0.92,
+                    ..default()
+                })
+            }),
         );
         let color = kind_color(kind);
         highlight.insert(
@@ -449,9 +559,11 @@ fn make_palette(materials: &mut Assets<StandardMaterial>) -> Palette {
         highlight,
         slab: materials.add(concrete(Color::srgb(0.30, 0.31, 0.35), 0.95)),
         sidewalk: materials.add(concrete(Color::srgb(0.42, 0.43, 0.47), 0.9)),
-        // Wet-look asphalt: dark and fairly smooth so lights catch on it.
+        // Wet-look asphalt: dark, grainy and fairly smooth so lights catch.
         ground: materials.add(StandardMaterial {
-            base_color: Color::srgb(0.10, 0.105, 0.125),
+            base_color: Color::srgb(0.13, 0.135, 0.16),
+            base_color_texture: Some(asphalt),
+            uv_transform: bevy::math::Affine2::from_scale(Vec2::splat(city_side / 3.5)),
             perceptual_roughness: 0.35,
             metallic: 0.05,
             ..default()
@@ -541,6 +653,74 @@ fn make_palette(materials: &mut Assets<StandardMaterial>) -> Palette {
             unlit: true,
             ..default()
         }),
+        crosswalk: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.85, 0.85, 0.85),
+            base_color_texture: Some(zebra),
+            perceptual_roughness: 0.5,
+            alpha_mode: AlphaMode::Blend,
+            unlit: false,
+            ..default()
+        }),
+        puddle: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.05, 0.06, 0.10),
+            perceptual_roughness: 0.04,
+            metallic: 0.4,
+            reflectance: 0.9,
+            ..default()
+        }),
+    }
+}
+
+/// Zebra crossings on the road just outside each district gate.
+fn spawn_crosswalks(ctx: &mut SpawnCtx) {
+    for (pos, out) in ctx.gates.0.clone() {
+        let yaw = out.x.atan2(out.y);
+        let center = Vec2::new(pos.x, pos.z) + out * 2.4;
+        ctx.commands.spawn((
+            Mesh3d(ctx.meshes.quad.clone()),
+            MeshMaterial3d(ctx.palette.crosswalk.clone()),
+            Transform::from_xyz(center.x, pos.y + 0.012, center.y)
+                .with_rotation(
+                    Quat::from_rotation_y(yaw) * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                )
+                .with_scale(Vec3::new(2.6, 3.4, 1.0)),
+            NotShadowCaster,
+        ));
+    }
+}
+
+/// Reflective puddles scattered over the roads between districts.
+fn spawn_puddles(ctx: &mut SpawnCtx, root_rect: Rect2) {
+    let mut rng = SmallRng::seed_from_u64(0xC17B00B5);
+    let mut placed = 0;
+    for _ in 0..500 {
+        if placed >= 90 {
+            break;
+        }
+        let p = Vec2::new(
+            rng.random_range(root_rect.min.x - 8.0..root_rect.max().x + 8.0),
+            rng.random_range(root_rect.min.y - 8.0..root_rect.max().y + 8.0),
+        );
+        // Roads are the space between district slabs.
+        if ctx.districts.0.iter().skip(1).any(|d| d.rect.contains(p)) {
+            continue;
+        }
+        placed += 1;
+        ctx.commands.spawn((
+            Mesh3d(ctx.meshes.circle.clone()),
+            MeshMaterial3d(ctx.palette.puddle.clone()),
+            Transform::from_xyz(p.x, 0.006, p.y)
+                .with_rotation(
+                    Quat::from_rotation_y(rng.random_range(0.0..std::f32::consts::TAU))
+                        * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                )
+                .with_scale(Vec3::new(
+                    rng.random_range(0.9..3.0),
+                    rng.random_range(0.6..1.8),
+                    1.0,
+                )),
+            NotShadowCaster,
+        ));
     }
 }
 
@@ -616,7 +796,7 @@ fn spawn_district(
 
     // Fill the street-facing perimeter row first (biggest files up front).
     let leftovers = if rect.size.x > 20.0 && rect.size.y > 20.0 {
-        spawn_perimeter_row(ctx, rect, &buildings, &mut rng)
+        spawn_perimeter_row(ctx, rect, depth, &buildings, &mut rng)
     } else {
         buildings.clone()
     };
@@ -692,9 +872,13 @@ fn spawn_sidewalk_ring(ctx: &mut SpawnCtx, rect: Rect2) {
 fn spawn_perimeter_row<'f>(
     ctx: &mut SpawnCtx,
     rect: Rect2,
+    depth: usize,
     files: &[&'f FileEntry],
     rng: &mut SmallRng,
 ) -> Vec<&'f FileEntry> {
+    // Streets outside depth 0-1 districts are ground-level asphalt; deeper
+    // districts open onto their parent's slab.
+    let road_y = if depth <= 1 { 0.0 } else { SLAB_TOP };
     let corner = 3.2;
     let mn = rect.min;
     let mx = rect.max();
@@ -745,7 +929,7 @@ fn spawn_perimeter_row<'f>(
             if since_gap > 20.0 {
                 let gap = 2.6;
                 let gate = start + along * (cursor + gap * 0.5);
-                ctx.gates.0.push(Vec3::new(gate.x, SLAB_TOP, gate.y));
+                ctx.gates.0.push((Vec3::new(gate.x, road_y, gate.y), out));
                 cursor += gap;
                 since_gap = 0.0;
                 if cursor + w > length {

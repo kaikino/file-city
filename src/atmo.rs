@@ -26,7 +26,8 @@ impl Plugin for AtmoPlugin {
             .add_systems(OnEnter(AppState::Playing), setup_sky)
             .add_systems(
                 Update,
-                (spawn_street_lamps, day_night_cycle).run_if(in_state(AppState::Playing)),
+                (spawn_street_lamps, day_night_cycle, fly_drones)
+                    .run_if(in_state(AppState::Playing)),
             );
     }
 }
@@ -46,6 +47,16 @@ struct Sun;
 
 #[derive(Component)]
 struct StreetLamp;
+
+/// Glowing traffic streak circling above the rooftops.
+#[derive(Component)]
+struct Drone {
+    center: Vec2,
+    radius: f32,
+    height: f32,
+    speed: f32,
+    phase: f32,
+}
 
 fn setup_sky(
     mut commands: Commands,
@@ -76,10 +87,12 @@ fn setup_sky(
     ));
 }
 
-/// Places lamp posts at street-gate corners once the city exists.
+/// Places lamp posts at street gates and launches drones, once the city
+/// exists.
 fn spawn_street_lamps(
     mut commands: Commands,
     gates: Option<Res<Gates>>,
+    meta: Option<Res<CityMeta>>,
     meshes: Option<Res<crate::citygen::CityMeshes>>,
     palette: Option<Res<Palette>>,
     mut done: Local<bool>,
@@ -87,12 +100,14 @@ fn spawn_street_lamps(
     if *done {
         return;
     }
-    let (Some(gates), Some(meshes), Some(palette)) = (gates, meshes, palette) else {
+    let (Some(gates), Some(meta), Some(meshes), Some(palette)) = (gates, meta, meshes, palette)
+    else {
         return;
     };
     *done = true;
     let step = (gates.0.len() / MAX_LAMPS).max(1);
-    for (i, gate) in gates.0.iter().step_by(step).enumerate() {
+    let mut count = 0;
+    for (i, (gate, out)) in gates.0.iter().step_by(step).enumerate() {
         if i >= MAX_LAMPS {
             break;
         }
@@ -102,11 +117,13 @@ fn spawn_street_lamps(
         } else {
             Color::srgb(1.0, 0.75, 0.45)
         };
+        // Stand the pole beside the gate, just off the walking line.
+        let side = Vec2::new(out.y, -out.x) * 1.5;
         commands
             .spawn((
                 Mesh3d(meshes.cube.clone()),
                 MeshMaterial3d(palette.dark_metal.clone()),
-                Transform::from_xyz(gate.x, gate.y + 1.9, gate.z)
+                Transform::from_xyz(gate.x + side.x, gate.y + 1.9, gate.z + side.y)
                     .with_scale(Vec3::new(0.09, 3.8, 0.09)),
             ))
             .with_children(|parent| {
@@ -122,8 +139,53 @@ fn spawn_street_lamps(
                     Transform::from_xyz(0.0, 0.52, 0.0),
                 ));
             });
+        count += 1;
     }
-    info!("street lamps: {}", gates.0.len().min(MAX_LAMPS));
+    info!("street lamps: {count}");
+
+    // Drones circling over the city at rooftop-plus heights.
+    let mut seed = 0x9E3779B97F4A7C15u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 11) as f32 / (1u64 << 53) as f32
+    };
+    for i in 0..14 {
+        let r = meta.half_extent * (0.25 + 0.6 * next());
+        let drone = Drone {
+            center: Vec2::new(
+                (next() - 0.5) * meta.half_extent,
+                (next() - 0.5) * meta.half_extent,
+            ),
+            radius: r,
+            height: 26.0 + 22.0 * next(),
+            speed: (2.5 + 4.5 * next()) / r,
+            phase: next() * std::f32::consts::TAU,
+        };
+        commands.spawn((
+            Mesh3d(meshes.cube.clone()),
+            MeshMaterial3d(palette.neon[i % 6].clone()),
+            Transform::from_xyz(drone.center.x, drone.height, drone.center.y)
+                .with_scale(Vec3::new(0.5, 0.14, 1.3)),
+            bevy::light::NotShadowCaster,
+            drone,
+        ));
+    }
+}
+
+/// Moves drones along their circular lanes, nose pointed along the path.
+fn fly_drones(time: Res<Time>, mut drones: Query<(&Drone, &mut Transform)>) {
+    let t = time.elapsed_secs();
+    for (drone, mut transform) in &mut drones {
+        let a = drone.phase + t * drone.speed;
+        let (sin, cos) = a.sin_cos();
+        let pos = drone.center + Vec2::new(cos, sin) * drone.radius;
+        let tangent = Vec2::new(-sin, cos);
+        transform.translation = Vec3::new(pos.x, drone.height + (t * 0.7 + drone.phase).sin(), pos.y);
+        transform.rotation = Quat::from_rotation_y(tangent.x.atan2(tangent.y))
+            * Quat::from_rotation_z(0.28);
+    }
 }
 
 fn day_night_cycle(
